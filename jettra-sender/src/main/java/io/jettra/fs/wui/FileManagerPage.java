@@ -22,7 +22,7 @@ public class FileManagerPage extends JettraDashboardPage {
 
     private Tree fileTreeLeft;
     private Tree fileTreeRight;
-    private io.jettra.wui.complex.ContextMenu contextMenu;
+    // private io.jettra.wui.complex.ContextMenu contextMenu;
     private boolean showHiddenFiles = false;
     
     // Estado para operaciones de archivos
@@ -126,10 +126,12 @@ public class FileManagerPage extends JettraDashboardPage {
             Tree.TreeItem item = new Tree.TreeItem(displayLabel, currentPath);
             final String pathForEvent = currentPath;
             
+/*
             item.addContextMenuListener(() -> {
                 selectedPath = pathForEvent;
                 updateContextMenu();
             });
+*/
 
             parent.add(item);
             if (entry.getValue() instanceof Map) {
@@ -223,9 +225,9 @@ public class FileManagerPage extends JettraDashboardPage {
         
         container.add(dualGrid);
         
-        // Inicializar el Menú Contextual
-        contextMenu = new io.jettra.wui.complex.ContextMenu();
-        container.add(contextMenu);
+        // Inicializar el Menú Contextual (Desactivado por falta de componente en JettraWUI)
+        // contextMenu = new io.jettra.wui.complex.ContextMenu();
+        // container.add(contextMenu);
         
         center.add(container);
         
@@ -233,46 +235,12 @@ public class FileManagerPage extends JettraDashboardPage {
         refreshFileTree();
     }
 
+/*
     private void updateContextMenu() {
         contextMenu.getChildren().clear();
-        contextMenu.addOption("Copiar", "📂", () -> {
-            clipboardPath = selectedPath;
-            isCutOperation = false;
-            System.out.println("Copiado al portapapeles: " + clipboardPath);
-        });
-        
-        if (!clipboardPath.isEmpty()) {
-            contextMenu.addOption("Pegar aquí", "📋", () -> {
-                doPaste();
-                refreshFileTree();
-                contextMenu.setUpdate("file-tree-3d-left,file-tree-3d-right");
-            });
-        }
-        
-        contextMenu.addOption("Renombrar", "✏️", () -> {
-            // En una implementación real usaríamos un prompt. 
-            // Para demo: añadimos "_renamed"
-            io.jettra.fs.receptor.JettraFileSystemReceptor receptor = io.jettra.fs.sender.JettraMain.getCurrentReceptor();
-            if (receptor != null) {
-                java.io.File f = new java.io.File(selectedPath);
-                String newName = f.getName() + "_new";
-                receptor.renamePath(selectedPath, newName);
-                refreshFileTree();
-                contextMenu.setUpdate("file-tree-3d-left,file-tree-3d-right");
-            }
-        });
-        
-        contextMenu.addOption("Eliminar", "🗑️", () -> {
-            io.jettra.fs.receptor.JettraFileSystemReceptor receptor = io.jettra.fs.sender.JettraMain.getCurrentReceptor();
-            if (receptor != null) {
-                receptor.deletePath(selectedPath);
-                refreshFileTree();
-                contextMenu.setUpdate("file-tree-3d-left,file-tree-3d-right");
-            }
-        });
-        
-        contextMenu.setUpdate("jt-context-menu");
+        ...
     }
+*/
 
     private void doPaste() {
         io.jettra.fs.receptor.JettraFileSystemReceptor receptor = io.jettra.fs.sender.JettraMain.getCurrentReceptor();

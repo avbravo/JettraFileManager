@@ -34,6 +34,7 @@ public class JettraMain {
         int port = Integer.parseInt(props.getProperty("jettra.server.port", "0")); // 0 means find free port
         
         boolean startShell = false;
+        boolean startFX = false;
         // Override from command line
         for (int i = 0; i < args.length; i++) {
             if ("--port".equals(args[i]) && i + 1 < args.length) {
@@ -41,6 +42,9 @@ public class JettraMain {
             }
             if ("--shell".equals(args[i])) {
                 startShell = true;
+            }
+            if ("--fx".equals(args[i])) {
+                startFX = true;
             }
         }
 
@@ -63,6 +67,13 @@ public class JettraMain {
         }
 
         System.out.println("Interfaz 3D JettraWUI activada. Visualizando recipientes y objetos...");
+        
+        if (startFX) {
+            System.out.println("Iniciando Interfaz JavaFX...");
+            new Thread(() -> {
+                io.jettra.fs.fx.JettraFileManagerFX.main(args);
+            }).start();
+        }
         
         if (startShell) {
             io.jettra.fs.shell.JettraShell shell = new io.jettra.fs.shell.JettraShell(targetDrive);
