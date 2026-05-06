@@ -11,6 +11,8 @@ import java.net.ServerSocket;
 public class JettraMain {
     private static JettraFileSystemReceptor currentReceptor;
 
+    public static int assignedPort = 8080;
+
     public static JettraFileSystemReceptor getCurrentReceptor() {
         return currentReceptor;
     }
@@ -23,22 +25,16 @@ public class JettraMain {
         
         System.out.println("Detectando unidad de destino: " + targetDrive);
         
-        // Load Configuration
-        java.util.Properties props = new java.util.Properties();
-        try (java.io.InputStream is = new java.io.FileInputStream("jettrafilemanagercongif.properties")) {
-            props.load(is);
-        } catch (IOException e) {
-            // Ignore if missing in simulation
-        }
-
-        int port = Integer.parseInt(props.getProperty("jettra.server.port", "0")); // 0 means find free port
+        // Dynamic Port Discovery
+        assignedPort = findAvailablePort(8080);
+        System.out.println("--- PUERTO ASIGNADO AL RECEPTOR/SENDER: " + assignedPort + " ---");
         
         boolean startShell = false;
         boolean startFX = false;
         // Override from command line
         for (int i = 0; i < args.length; i++) {
             if ("--port".equals(args[i]) && i + 1 < args.length) {
-                port = Integer.parseInt(args[i + 1]);
+                assignedPort = Integer.parseInt(args[i + 1]);
             }
             if ("--shell".equals(args[i])) {
                 startShell = true;
@@ -48,15 +44,11 @@ public class JettraMain {
             }
         }
 
-        if (port == 0) {
-            port = findFreePort();
-        }
-
         // 1. "Instalar" y arrancar el Receptor en la unidad de destino
-        startReceptorOnDrive(targetDrive, port);
+        startReceptorOnDrive(targetDrive, assignedPort);
 
         // 2. Iniciar el Emisor JettraFileManager orientado al receptor
-        JettraFileSystem sender = new JettraFileSystem("localhost", port);
+        JettraFileSystem sender = new JettraFileSystem("localhost", assignedPort);
 
         // 3. Simular envío de un archivo grande
         File largeFile = new File("/home/avbravo/Videos/peli_grande.mkv");
@@ -81,9 +73,15 @@ public class JettraMain {
         }
     }
 
-    private static int findFreePort() throws IOException {
-        try (ServerSocket socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
+    private static int findAvailablePort(int defaultPort) {
+        try (ServerSocket socket = new ServerSocket(defaultPort)) {
+            return defaultPort;
+        } catch (IOException e) {
+            try (ServerSocket socket = new ServerSocket(0)) {
+                return socket.getLocalPort();
+            } catch (IOException ex) {
+                return defaultPort + (int)(Math.random() * 1000); // Fallback
+            }
         }
     }
 

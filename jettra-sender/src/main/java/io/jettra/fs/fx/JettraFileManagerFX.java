@@ -1,9 +1,14 @@
 package io.jettra.fs.fx;
 
+import io.jettra.fs.chunks.ChunkManager;
+import io.jettra.fs.grpc.JettraChunk;
+import io.jettra.fs.grpc.TransferStatus;
 import io.jettra.fs.receptor.JettraFileSystemReceptor;
 import io.jettra.fs.sender.JettraMain;
+import io.jettra.grpc.JettraObserver;
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
@@ -13,8 +18,10 @@ import javafx.stage.Stage;
 import javafx.util.Callback;
 
 import java.io.File;
+import java.io.RandomAccessFile;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 
 public class JettraFileManagerFX extends Application {
 
@@ -22,10 +29,14 @@ public class JettraFileManagerFX extends Application {
     private TreeView<FileNode> treeRight;
     private ListView<String> deviceList;
     private Label statusLabel;
+    private ProgressBar progressBar;
+    private Button btnCancel;
+    private Button btnPaste;
     private boolean showHidden = false;
     private String clipboardPath = "";
     private boolean isCut = false;
-    private String currentBaseDir = "";
+    private TreeItem<FileNode> lastActiveTargetItem = null;
+    private Task<Void> currentTransferTask;
 
     @Override
     public void start(Stage primaryStage) {
@@ -35,68 +46,80 @@ public class JettraFileManagerFX extends Application {
         // Top Header
         VBox topBox = new VBox(10);
         topBox.setPadding(new Insets(20));
-        Label title = new Label("Jettra Explorer 3D");
+        Label title = new Label("Jettra Explorer 3D - Native Management");
         title.getStyleClass().add("header-label");
         
-        HBox toolbar = new HBox(10);
+        HBox toolbar = new HBox(15);
         toolbar.setAlignment(Pos.CENTER_LEFT);
         Button btnRefresh = new Button("🔄 Actualizar");
         btnRefresh.setOnAction(e -> refreshAll());
         
-        ToggleButton btnHidden = new ToggleButton("👁️ Mostrar Ocultos");
-        btnHidden.setOnAction(e -> {
-            showHidden = btnHidden.isSelected();
-            btnHidden.setText(showHidden ? "🙈 Ocultar Ocultos" : "👁️ Mostrar Ocultos");
-            refreshAll();
-        });
-        
-        toolbar.getChildren().addAll(btnRefresh, btnHidden);
-        topBox.getChildren().addAll(title, toolbar);
-        root.setTop(topBox);
-
-        // Sidebar (Devices)
-        VBox sidebar = new VBox(10);
-        sidebar.setPrefWidth(250);
-        sidebar.getStyleClass().add("sidebar");
-        Label devHeader = new Label("DISPOSITIVOS");
-        devHeader.setStyle("-fx-font-weight: bold; -fx-text-fill: #555;");
-        
-        deviceList = new ListView<>();
-        deviceList.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
-            if (newVal != null) {
-                loadDevice(newVal);
+        btnPaste = new Button("📋 Pegar");
+        btnPaste.setDisable(true);
+        btnPaste.getStyleClass().add("btn-paste");
+        btnPaste.setOnAction(e -> {
+            if (!clipboardPath.isEmpty() && lastActiveTargetItem != null) {
+                startTransfer(clipboardPath, lastActiveTargetItem);
+            } else {
+                statusLabel.setText("⚠️ Selecciona una carpeta de destino primero.");
             }
         });
         
+        ToggleButton btnHidden = new ToggleButton("👁️ Ocultos");
+        btnHidden.setOnAction(e -> { showHidden = btnHidden.isSelected(); refreshAll(); });
+        
+        toolbar.getChildren().addAll(btnRefresh, btnPaste, btnHidden);
+        topBox.getChildren().addAll(title, toolbar);
+        root.setTop(topBox);
+
+        // Sidebar
+        VBox sidebar = new VBox(10);
+        sidebar.setPrefWidth(240);
+        sidebar.getStyleClass().add("sidebar");
+        Label devHeader = new Label("ACCESO RÁPIDO");
+        devHeader.setStyle("-fx-font-weight: bold; -fx-text-fill: #00ffff;");
+        
+        deviceList = new ListView<>();
         sidebar.getChildren().addAll(devHeader, deviceList);
         root.setLeft(sidebar);
 
-        // Center (Dual Pane)
+        // Center
         SplitPane splitPane = new SplitPane();
-        
         VBox leftPane = createFilePane("Origen", true);
         VBox rightPane = createFilePane("Destino", false);
-        
         splitPane.getItems().addAll(leftPane, rightPane);
         splitPane.setDividerPositions(0.5);
         root.setCenter(splitPane);
 
-        // Bottom (Status Bar)
-        HBox statusBar = new HBox(10);
+        // Bottom
+        HBox statusBar = new HBox(15);
+        statusBar.setPadding(new Insets(10));
+        statusBar.setAlignment(Pos.CENTER_LEFT);
         statusBar.getStyleClass().add("status-bar");
-        statusLabel = new Label("Listo");
-        statusBar.getChildren().add(statusLabel);
+        
+        statusLabel = new Label("Listo | Puerto: " + JettraMain.assignedPort);
+        statusLabel.setPrefWidth(350);
+        
+        progressBar = new ProgressBar(0);
+        progressBar.setPrefWidth(300);
+        progressBar.setVisible(false);
+        
+        btnCancel = new Button("🛑 Cancelar");
+        btnCancel.setVisible(false);
+        btnCancel.setOnAction(e -> { if (currentTransferTask != null) currentTransferTask.cancel(); });
+        
+        statusBar.getChildren().addAll(statusLabel, progressBar, btnCancel);
         root.setBottom(statusBar);
 
-        Scene scene = new Scene(root, 1200, 800);
+        Scene scene = new Scene(root, 1300, 850);
         String css = Objects.requireNonNull(getClass().getResource("style.css")).toExternalForm();
         scene.getStylesheets().add(css);
 
-        primaryStage.setTitle("Jettra File Manager FX");
+        primaryStage.setTitle("Jettra File Manager FX - Port " + JettraMain.assignedPort);
+        primaryStage.setOnCloseRequest(e -> { Platform.exit(); System.exit(0); });
         primaryStage.setScene(scene);
         primaryStage.show();
 
-        // Initial Load
         loadDevices();
         refreshAll();
     }
@@ -106,17 +129,21 @@ public class JettraFileManagerFX extends Application {
         pane.setPadding(new Insets(10));
         Label header = new Label(title);
         header.getStyleClass().add("pane-header");
-        header.setMaxWidth(Double.MAX_VALUE);
         
         TreeView<FileNode> tree = new TreeView<>();
         tree.setShowRoot(false);
         if (isLeft) treeLeft = tree; else treeRight = tree;
         
+        tree.getSelectionModel().selectedItemProperty().addListener((o, ov, nv) -> {
+            if (nv != null) {
+                lastActiveTargetItem = nv;
+                if (!clipboardPath.isEmpty()) btnPaste.setDisable(false);
+            }
+        });
+
         tree.setCellFactory(new Callback<>() {
             @Override
-            public TreeCell<FileNode> call(TreeView<FileNode> param) {
-                return new FileTreeCell();
-            }
+            public TreeCell<FileNode> call(TreeView<FileNode> param) { return new FileTreeCell(); }
         });
 
         VBox.setVgrow(tree, Priority.ALWAYS);
@@ -127,104 +154,66 @@ public class JettraFileManagerFX extends Application {
     private void loadDevices() {
         deviceList.getItems().clear();
         deviceList.getItems().add("📂 Raíz (/)");
-        deviceList.getItems().add("🏠 Home (" + System.getProperty("user.name") + ")");
-        deviceList.getItems().add("💾 Simulated Drive");
-        
-        // Detectar unidades reales en /media/ o /run/media/
-        String username = System.getProperty("user.name");
-        String[] mediaPaths = {"/media/" + username, "/run/media/" + username};
-        for (String basePath : mediaPaths) {
-            File mediaDir = new File(basePath);
-            if (mediaDir.exists() && mediaDir.isDirectory()) {
-                File[] drives = mediaDir.listFiles();
-                if (drives != null) {
-                    for (File drive : drives) {
-                        if (drive.isDirectory()) {
-                            deviceList.getItems().add("🔌 " + drive.getName());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private void loadDevice(String device) {
-        statusLabel.setText("Cambiando a: " + device);
-        String path = "";
-        if (device.contains("Raíz")) path = "/";
-        else if (device.contains("Home")) path = System.getProperty("user.home");
-        else if (device.contains("Simulated")) path = "/home/avbravo/NetBeansProjects/jettrastack_local/JettraWorkspace/JettraFileManager/simulated_drive";
-        else if (device.startsWith("🔌 ")) {
-             String username = System.getProperty("user.name");
-             String driveName = device.substring(3);
-             path = new File("/media/" + username, driveName).exists() ? "/media/" + username + "/" + driveName : "/run/media/" + username + "/" + driveName;
-        }
-
-        if (!path.isEmpty()) {
-            currentBaseDir = path;
-            refreshAll();
-        }
+        deviceList.getItems().add("🏠 Home");
+        deviceList.getItems().add("🖧 NAS-01");
     }
 
     private void refreshAll() {
-        if (currentBaseDir.isEmpty()) {
-            currentBaseDir = "/home/avbravo/NetBeansProjects/jettrastack_local/JettraWorkspace/JettraFileManager/simulated_drive";
-        }
-        
-        JettraFileSystemReceptor receptor = new JettraFileSystemReceptor(currentBaseDir);
-        
-        populateTreeLazy(treeLeft, receptor);
-        populateTreeLazy(treeRight, receptor);
-        statusLabel.setText("Explorador en: " + currentBaseDir);
+        populateMultiUnitTree(treeLeft);
+        populateMultiUnitTree(treeRight);
     }
 
-    private void populateTreeLazy(TreeView<FileNode> tree, JettraFileSystemReceptor receptor) {
-        TreeItem<FileNode> rootItem = new TreeItem<>(new FileNode("Root", "", true));
+    private void populateMultiUnitTree(TreeView<FileNode> tree) {
+        TreeItem<FileNode> rootItem = new TreeItem<>(new FileNode("Computer", "", true));
+        rootItem.getChildren().add(createUnitNode("Raíz (/)", "/", "📂"));
+        rootItem.getChildren().add(createUnitNode("Home", System.getProperty("user.home"), "🏠"));
         
-        Map<String, Object> children = receptor.listPath("", showHidden);
-        for (Map.Entry<String, Object> entry : children.entrySet()) {
-            rootItem.getChildren().add(createLazyTreeItem(entry.getKey(), entry.getKey(), entry.getValue() instanceof Map, receptor));
+        File media = new File("/media/" + System.getProperty("user.name"));
+        if (media.exists()) {
+            File[] drives = media.listFiles();
+            if (drives != null) for (File d : drives) rootItem.getChildren().add(createUnitNode("USB: " + d.getName(), d.getAbsolutePath(), "🔌"));
         }
-        
+        rootItem.getChildren().add(createUnitNode("NAS-Remote", "/home/avbravo/NAS_Sim", "🖧"));
         tree.setRoot(rootItem);
     }
 
-    private TreeItem<FileNode> createLazyTreeItem(String name, String path, boolean isDir, JettraFileSystemReceptor receptor) {
-        TreeItem<FileNode> item = new TreeItem<>(new FileNode(name, path, isDir));
-        if (isDir) {
-            // Add a dummy child to make it expandable
-            item.getChildren().add(new TreeItem<>(new FileNode("Loading...", "", false)));
-            
-            item.expandedProperty().addListener((obs, oldVal, newVal) -> {
-                if (newVal && item.getChildren().size() == 1 && item.getChildren().get(0).getValue().name.equals("Loading...")) {
-                    item.getChildren().clear();
-                    Map<String, Object> children = receptor.listPath(path, showHidden);
-                    for (Map.Entry<String, Object> entry : children.entrySet()) {
-                        String childPath = path.isEmpty() ? entry.getKey() : path + "/" + entry.getKey();
-                        item.getChildren().add(createLazyTreeItem(entry.getKey(), childPath, entry.getValue() instanceof Map, receptor));
-                    }
-                }
-            });
-        }
+    private TreeItem<FileNode> createUnitNode(String label, String absPath, String icon) {
+        FileNode node = new FileNode(label, absPath, true);
+        node.setUnitIcon(icon);
+        TreeItem<FileNode> item = new TreeItem<>(node);
+        item.getChildren().add(new TreeItem<>(new FileNode("Loading...", "", false)));
+        item.expandedProperty().addListener((obs, oldVal, newVal) -> {
+            if (newVal && item.getChildren().size() == 1 && item.getChildren().get(0).getValue().name.equals("Loading...")) {
+                loadLevel(item, "", new JettraFileSystemReceptor(absPath));
+            }
+        });
         return item;
     }
 
-    // Inner classes for Tree view
+    private void loadLevel(TreeItem<FileNode> parent, String rel, JettraFileSystemReceptor receptor) {
+        parent.getChildren().clear();
+        Map<String, Object> children = receptor.listPath(rel, showHidden);
+        for (Map.Entry<String, Object> entry : children.entrySet()) {
+            String name = entry.getKey();
+            String childRel = rel.isEmpty() ? name : rel + "/" + name;
+            boolean isDir = entry.getValue() instanceof Map;
+            TreeItem<FileNode> childItem = new TreeItem<>(new FileNode(name, childRel, isDir));
+            if (isDir) {
+                childItem.getChildren().add(new TreeItem<>(new FileNode("Loading...", "", false)));
+                childItem.expandedProperty().addListener((o, ov, nv) -> {
+                    if (nv && childItem.getChildren().size() == 1 && childItem.getChildren().get(0).getValue().name.equals("Loading...")) {
+                        loadLevel(childItem, childRel, receptor);
+                    }
+                });
+            }
+            parent.getChildren().add(childItem);
+        }
+    }
+
     static class FileNode {
-        String name;
-        String path;
-        boolean isDirectory;
-
-        FileNode(String name, String path, boolean isDirectory) {
-            this.name = name;
-            this.path = path;
-            this.isDirectory = isDirectory;
-        }
-
-        @Override
-        public String toString() {
-            return name;
-        }
+        String name; String path; boolean isDirectory; String unitIcon = null;
+        FileNode(String n, String p, boolean d) { this.name = n; this.path = p; this.isDirectory = d; }
+        void setUnitIcon(String i) { this.unitIcon = i; }
     }
 
     class FileTreeCell extends TreeCell<FileNode> {
@@ -232,81 +221,106 @@ public class JettraFileManagerFX extends Application {
         protected void updateItem(FileNode item, boolean empty) {
             super.updateItem(item, empty);
             if (empty || item == null) {
-                setText(null);
-                setGraphic(null);
-                setContextMenu(null);
+                setText(null); setGraphic(null); setContextMenu(null);
             } else {
-                String icon = item.isDirectory ? "📂" : getFileIcon(item.name);
+                String icon = item.unitIcon != null ? item.unitIcon : (item.isDirectory ? "📂" : getFileIcon(item.name));
                 setText(icon + " " + item.name);
                 
                 ContextMenu menu = new ContextMenu();
                 MenuItem copy = new MenuItem("Copiar");
-                copy.setOnAction(e -> {
-                    clipboardPath = item.path;
-                    isCut = false;
-                    statusLabel.setText("Copiado: " + item.path);
-                });
+                copy.setOnAction(e -> { clipboardPath = getAbs(item, getTreeItem()); isCut = false; btnPaste.setDisable(false); statusLabel.setText("Copiado: " + item.name); });
                 
+                MenuItem cut = new MenuItem("Cortar");
+                cut.setOnAction(e -> { clipboardPath = getAbs(item, getTreeItem()); isCut = true; btnPaste.setDisable(false); statusLabel.setText("Cortado: " + item.name); });
+
                 MenuItem paste = new MenuItem("Pegar aquí");
                 paste.setDisable(clipboardPath.isEmpty());
-                paste.setOnAction(e -> {
-                    doPaste(item.path);
-                    refreshAll();
-                });
-                
-                MenuItem rename = new MenuItem("Renombrar");
-                rename.setOnAction(e -> {
-                    JettraFileSystemReceptor r = new JettraFileSystemReceptor(currentBaseDir);
-                    r.renamePath(item.path, item.name + "_new");
-                    refreshAll();
-                });
-                
-                MenuItem delete = new MenuItem("Eliminar");
-                delete.setOnAction(e -> {
-                    JettraFileSystemReceptor r = new JettraFileSystemReceptor(currentBaseDir);
-                    r.deletePath(item.path);
-                    refreshAll();
-                });
-                
-                menu.getItems().addAll(copy, paste, new SeparatorMenuItem(), rename, delete);
+                paste.setOnAction(e -> startTransfer(clipboardPath, getTreeItem()));
+
+                menu.getItems().addAll(copy, cut, paste, new SeparatorMenuItem(), new MenuItem("Eliminar"));
                 setContextMenu(menu);
             }
         }
+        private String getFileIcon(String n) { return n.endsWith(".java") ? "☕" : "📄"; }
+    }
 
-        private String getFileIcon(String filename) {
-            String ext = "";
-            int i = filename.lastIndexOf('.');
-            if (i > 0) ext = filename.substring(i + 1).toLowerCase();
-            switch (ext) {
-                case "txt": case "md": return "📝";
-                case "jpg": case "png": case "gif": return "🖼️";
-                case "mp3": case "wav": return "🎵";
-                case "mp4": case "avi": return "🎥";
-                case "pdf": return "📕";
-                case "zip": case "rar": return "📦";
-                case "java": case "jar": return "☕";
-                default: return "📄";
+    private String getAbs(FileNode node, TreeItem<FileNode> item) {
+        TreeItem<FileNode> curr = item;
+        while (curr.getParent() != null && curr.getParent().getParent() != null) curr = curr.getParent();
+        String unitBase = curr.getValue().path;
+        return (item == curr) ? unitBase : new File(unitBase, node.path).getAbsolutePath();
+    }
+
+    private void startTransfer(String srcAbs, TreeItem<FileNode> targetItem) {
+        File src = new File(srcAbs);
+        String targetAbs = getAbs(targetItem.getValue(), targetItem);
+        File targetFile = new File(targetAbs);
+        File destDir = targetFile.isDirectory() ? targetFile : targetFile.getParentFile();
+        
+        // El targetItem real para el refresh es el directorio
+        TreeItem<FileNode> refreshItem = targetFile.isDirectory() ? targetItem : targetItem.getParent();
+
+        currentTransferTask = new Task<>() {
+            @Override
+            protected Void call() throws Exception {
+                updateMessage("Transfiriendo " + src.getName());
+                long fileSize = src.length();
+                int totalChunks = ChunkManager.calculateTotalChunks(fileSize);
+                String fileId = UUID.randomUUID().toString();
+                JettraFileSystemReceptor receptor = new JettraFileSystemReceptor(destDir.getAbsolutePath());
+                
+                try (RandomAccessFile raf = new RandomAccessFile(src, "r")) {
+                    for (int i = 0; i < totalChunks; i++) {
+                        if (isCancelled()) break;
+                        long pos = (long) i * ChunkManager.CHUNK_SIZE;
+                        int len = (int) Math.min(ChunkManager.CHUNK_SIZE, fileSize - pos);
+                        byte[] buffer = new byte[len];
+                        raf.seek(pos); raf.readFully(buffer);
+                        JettraChunk chunk = JettraChunk.newBuilder().setFileId(fileId).setFileName(src.getName()).setChunkIndex(i).setTotalChunks(totalChunks).setFileSize(fileSize).setData(buffer).build();
+                        receptor.sendChunk(chunk, new JettraObserver<>() {
+                            @Override public void onNext(TransferStatus v) {}
+                            @Override public void onError(Throwable t) {}
+                            @Override public void onCompleted() {}
+                        });
+                        updateProgress(i + 1, totalChunks);
+                    }
+                }
+                if (!isCancelled() && isCut) src.delete();
+                return null;
             }
-        }
+        };
+
+        progressBar.progressProperty().bind(currentTransferTask.progressProperty());
+        currentTransferTask.setOnRunning(e -> { progressBar.setVisible(true); btnCancel.setVisible(true); });
+        currentTransferTask.setOnSucceeded(e -> { 
+            finalizeTransfer("Éxito"); 
+            refreshSpecificNode(refreshItem);
+            if (isCut) { clipboardPath = ""; btnPaste.setDisable(true); }
+        });
+        currentTransferTask.setOnCancelled(e -> finalizeTransfer("Cancelado"));
+        currentTransferTask.setOnFailed(e -> finalizeTransfer("Error"));
+        new Thread(currentTransferTask).start();
     }
 
-    private void doPaste(String targetPath) {
-        JettraFileSystemReceptor receptor = new JettraFileSystemReceptor(currentBaseDir);
-        File source = new File(clipboardPath);
-        File target = new File(targetPath);
+    private void refreshSpecificNode(TreeItem<FileNode> item) {
+        if (item == null) return;
+        // Obtenemos la base de la unidad
+        TreeItem<FileNode> curr = item;
+        while (curr.getParent() != null && curr.getParent().getParent() != null) curr = curr.getParent();
+        String unitBase = curr.getValue().path;
+        JettraFileSystemReceptor receptor = new JettraFileSystemReceptor(unitBase);
         
-        String destFolder = target.isDirectory() ? target.getAbsolutePath() : target.getParent();
-        String destPath = target.isDirectory() ? targetPath + "/" + source.getName() : new File(target.getParent(), source.getName()).getPath();
-        
-        receptor.copyPath(clipboardPath, destPath);
-        if (isCut) {
-            receptor.deletePath(clipboardPath);
-            clipboardPath = "";
-        }
-        statusLabel.setText("Operación completada");
+        Platform.runLater(() -> {
+            loadLevel(item, item.getValue().path, receptor);
+            item.setExpanded(true);
+        });
     }
 
-    public static void main(String[] args) {
-        launch(args);
+    private void finalizeTransfer(String msg) {
+        progressBar.setVisible(false); btnCancel.setVisible(false);
+        statusLabel.textProperty().unbind();
+        statusLabel.setText(msg + " | Puerto: " + JettraMain.assignedPort);
     }
+
+    public static void main(String[] args) { launch(args); }
 }
