@@ -25,6 +25,7 @@ public class JettraFileManagerFX extends Application {
     private boolean showHidden = false;
     private String clipboardPath = "";
     private boolean isCut = false;
+    private String currentBaseDir = "";
 
     @Override
     public void start(Stage primaryStage) {
@@ -125,9 +126,11 @@ public class JettraFileManagerFX extends Application {
 
     private void loadDevices() {
         deviceList.getItems().clear();
-        deviceList.getItems().add("💾 Disco Local (Home)");
+        deviceList.getItems().add("📂 Raíz (/)");
+        deviceList.getItems().add("🏠 Home (" + System.getProperty("user.name") + ")");
+        deviceList.getItems().add("💾 Simulated Drive");
         
-        // Simular otros dispositivos como en la web
+        // Detectar unidades reales en /media/ o /run/media/
         String username = System.getProperty("user.name");
         String[] mediaPaths = {"/media/" + username, "/run/media/" + username};
         for (String basePath : mediaPaths) {
@@ -137,55 +140,73 @@ public class JettraFileManagerFX extends Application {
                 if (drives != null) {
                     for (File drive : drives) {
                         if (drive.isDirectory()) {
-                            deviceList.getItems().add("💾 " + drive.getName());
+                            deviceList.getItems().add("🔌 " + drive.getName());
                         }
                     }
                 }
             }
         }
-        deviceList.getItems().add("🖧 Jettra-NAS-01");
     }
 
     private void loadDevice(String device) {
         statusLabel.setText("Cambiando a: " + device);
-        // En una implementación real, cambiaríamos el receptor actual
-        refreshAll();
+        String path = "";
+        if (device.contains("Raíz")) path = "/";
+        else if (device.contains("Home")) path = System.getProperty("user.home");
+        else if (device.contains("Simulated")) path = "/home/avbravo/NetBeansProjects/jettrastack_local/JettraWorkspace/JettraFileManager/simulated_drive";
+        else if (device.startsWith("🔌 ")) {
+             String username = System.getProperty("user.name");
+             String driveName = device.substring(3);
+             path = new File("/media/" + username, driveName).exists() ? "/media/" + username + "/" + driveName : "/run/media/" + username + "/" + driveName;
+        }
+
+        if (!path.isEmpty()) {
+            currentBaseDir = path;
+            refreshAll();
+        }
     }
 
     private void refreshAll() {
-        JettraFileSystemReceptor receptor = JettraMain.getCurrentReceptor();
-        if (receptor == null) {
-            // Fallback to simulated drive if receptor not started
-            String targetDrive = "/home/avbravo/NetBeansProjects/jettrastack_local/JettraWorkspace/JettraFileManager/simulated_drive";
-            receptor = new JettraFileSystemReceptor(targetDrive);
+        if (currentBaseDir.isEmpty()) {
+            currentBaseDir = "/home/avbravo/NetBeansProjects/jettrastack_local/JettraWorkspace/JettraFileManager/simulated_drive";
         }
-
-        populateTree(treeLeft, receptor);
-        populateTree(treeRight, receptor);
-        statusLabel.setText("Explorador actualizado - " + (showHidden ? "Mostrando ocultos" : "Ocultos omitidos"));
+        
+        JettraFileSystemReceptor receptor = new JettraFileSystemReceptor(currentBaseDir);
+        
+        populateTreeLazy(treeLeft, receptor);
+        populateTreeLazy(treeRight, receptor);
+        statusLabel.setText("Explorador en: " + currentBaseDir);
     }
 
-    private void populateTree(TreeView<FileNode> tree, JettraFileSystemReceptor receptor) {
-        TreeItem<FileNode> root = new TreeItem<>(new FileNode("Root", "", true));
-        Map<String, Object> files = receptor.listFiles(showHidden, 5);
-        addNodes(root, files, "");
-        tree.setRoot(root);
+    private void populateTreeLazy(TreeView<FileNode> tree, JettraFileSystemReceptor receptor) {
+        TreeItem<FileNode> rootItem = new TreeItem<>(new FileNode("Root", "", true));
+        
+        Map<String, Object> children = receptor.listPath("", showHidden);
+        for (Map.Entry<String, Object> entry : children.entrySet()) {
+            rootItem.getChildren().add(createLazyTreeItem(entry.getKey(), entry.getKey(), entry.getValue() instanceof Map, receptor));
+        }
+        
+        tree.setRoot(rootItem);
     }
 
-    private void addNodes(TreeItem<FileNode> parentItem, Map<String, Object> files, String parentPath) {
-        if (files == null) return;
-        for (Map.Entry<String, Object> entry : files.entrySet()) {
-            String name = entry.getKey();
-            String path = parentPath.isEmpty() ? name : parentPath + "/" + name;
-            boolean isDir = entry.getValue() instanceof Map;
+    private TreeItem<FileNode> createLazyTreeItem(String name, String path, boolean isDir, JettraFileSystemReceptor receptor) {
+        TreeItem<FileNode> item = new TreeItem<>(new FileNode(name, path, isDir));
+        if (isDir) {
+            // Add a dummy child to make it expandable
+            item.getChildren().add(new TreeItem<>(new FileNode("Loading...", "", false)));
             
-            TreeItem<FileNode> item = new TreeItem<>(new FileNode(name, path, isDir));
-            parentItem.getChildren().add(item);
-            
-            if (isDir) {
-                addNodes(item, (Map<String, Object>) entry.getValue(), path);
-            }
+            item.expandedProperty().addListener((obs, oldVal, newVal) -> {
+                if (newVal && item.getChildren().size() == 1 && item.getChildren().get(0).getValue().name.equals("Loading...")) {
+                    item.getChildren().clear();
+                    Map<String, Object> children = receptor.listPath(path, showHidden);
+                    for (Map.Entry<String, Object> entry : children.entrySet()) {
+                        String childPath = path.isEmpty() ? entry.getKey() : path + "/" + entry.getKey();
+                        item.getChildren().add(createLazyTreeItem(entry.getKey(), childPath, entry.getValue() instanceof Map, receptor));
+                    }
+                }
+            });
         }
+        return item;
     }
 
     // Inner classes for Tree view
@@ -235,21 +256,16 @@ public class JettraFileManagerFX extends Application {
                 
                 MenuItem rename = new MenuItem("Renombrar");
                 rename.setOnAction(e -> {
-                    // Simple rename simulation
-                    JettraFileSystemReceptor r = JettraMain.getCurrentReceptor();
-                    if (r != null) {
-                        r.renamePath(item.path, item.name + "_new");
-                        refreshAll();
-                    }
+                    JettraFileSystemReceptor r = new JettraFileSystemReceptor(currentBaseDir);
+                    r.renamePath(item.path, item.name + "_new");
+                    refreshAll();
                 });
                 
                 MenuItem delete = new MenuItem("Eliminar");
                 delete.setOnAction(e -> {
-                    JettraFileSystemReceptor r = JettraMain.getCurrentReceptor();
-                    if (r != null) {
-                        r.deletePath(item.path);
-                        refreshAll();
-                    }
+                    JettraFileSystemReceptor r = new JettraFileSystemReceptor(currentBaseDir);
+                    r.deletePath(item.path);
+                    refreshAll();
                 });
                 
                 menu.getItems().addAll(copy, paste, new SeparatorMenuItem(), rename, delete);
@@ -275,16 +291,11 @@ public class JettraFileManagerFX extends Application {
     }
 
     private void doPaste(String targetPath) {
-        JettraFileSystemReceptor receptor = JettraMain.getCurrentReceptor();
-        if (receptor == null) return;
-
+        JettraFileSystemReceptor receptor = new JettraFileSystemReceptor(currentBaseDir);
         File source = new File(clipboardPath);
         File target = new File(targetPath);
         
         String destFolder = target.isDirectory() ? target.getAbsolutePath() : target.getParent();
-        // Since receptor handles paths relative to baseDir, we should be careful.
-        // For simulation, let's just use the relative logic if possible.
-        
         String destPath = target.isDirectory() ? targetPath + "/" + source.getName() : new File(target.getParent(), source.getName()).getPath();
         
         receptor.copyPath(clipboardPath, destPath);

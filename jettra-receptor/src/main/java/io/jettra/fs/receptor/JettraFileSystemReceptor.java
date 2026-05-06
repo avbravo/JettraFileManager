@@ -177,4 +177,29 @@ public class JettraFileSystemReceptor implements JettraTransferService {
             responseObserver.onError(e);
         }
     }
+
+    public java.util.Map<String, Object> listPath(String relativePath, boolean showHidden) {
+        java.util.Map<String, Object> result = new java.util.LinkedHashMap<>();
+        java.io.File dir = relativePath.isEmpty() ? new java.io.File(baseDir) : new java.io.File(baseDir, relativePath);
+        
+        if (dir.exists() && dir.isDirectory()) {
+            java.io.File[] files = dir.listFiles();
+            if (files != null) {
+                java.util.Arrays.sort(files, (a, b) -> {
+                    if (a.isDirectory() && !b.isDirectory()) return -1;
+                    if (!a.isDirectory() && b.isDirectory()) return 1;
+                    return a.getName().compareToIgnoreCase(b.getName());
+                });
+                for (java.io.File f : files) {
+                    if (!showHidden && f.isHidden()) continue;
+                    if (f.isDirectory()) {
+                        result.put(f.getName(), new java.util.LinkedHashMap<>());
+                    } else {
+                        result.put(f.getName(), null);
+                    }
+                }
+            }
+        }
+        return result;
+    }
 }
