@@ -12,6 +12,8 @@ public class JettraMain {
     private static JettraFileSystemReceptor currentReceptor;
 
     public static int assignedPort = 8080;
+    private static String targetDrivePath = "/home/avbravo/NetBeansProjects/jettrastack_local/JettraWorkspace/JettraFileManager/simulated_drive";
+    private static com.jettra.server.JettraServer jettraServer;
 
     public static JettraFileSystemReceptor getCurrentReceptor() {
         return currentReceptor;
@@ -44,8 +46,11 @@ public class JettraMain {
             }
         }
 
-        // 1. "Instalar" y arrancar el Receptor en la unidad de destino
-        startReceptorOnDrive(targetDrive, assignedPort);
+        // 1. No arrancar automáticamente el receptor si vamos a usar FX
+        if (!startFX) {
+            startReceptorOnDrive(targetDrive, assignedPort);
+        }
+        targetDrivePath = targetDrive;
 
         // 2. Iniciar el Emisor JettraFileManager orientado al receptor
         JettraFileSystem sender = new JettraFileSystem("localhost", assignedPort);
@@ -85,9 +90,21 @@ public class JettraMain {
         }
     }
 
-    private static com.jettra.server.JettraServer jettraServer;
+    public static void stopReceptor() {
+        if (jettraServer != null) {
+            System.out.println("Deteniendo Receptor JettraServer...");
+            jettraServer.stop();
+            jettraServer = null;
+        }
+    }
 
-    private static void startReceptorOnDrive(String drivePath, int port) throws IOException {
+    public static void startReceptor() throws IOException {
+        if (jettraServer == null) {
+            startReceptorOnDrive(targetDrivePath, assignedPort);
+        }
+    }
+
+    public static void startReceptorOnDrive(String drivePath, int port) throws IOException {
         System.out.println("Instalando JettraFileSystemReceptor en: " + drivePath);
         System.out.println("Arrancando Receptor JettraServer en puerto: " + port);
 

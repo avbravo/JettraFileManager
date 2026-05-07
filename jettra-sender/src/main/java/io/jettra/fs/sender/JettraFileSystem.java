@@ -29,23 +29,24 @@ public class JettraFileSystem {
         int totalChunks = ChunkManager.calculateTotalChunks(fileSize);
         String fileName = file.getName();
 
-        System.out.println("Iniciando transferencia de " + fileName + " (" + totalChunks + " trozos)");
+        System.out.println("Iniciando transferencia de " + fileName + " (" + totalChunks + " trozos de 1.5MB)");
 
-        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-            for (int i = 0; i < totalChunks; i++) {
-                final int index = i;
-                // Cada trozo se envía en un Virtual Thread para máxima concurrencia
-                executor.submit(() -> {
-                    try {
-                        byte[] buffer = new byte[ChunkManager.CHUNK_SIZE];
-                        int bytesRead;
-                        synchronized (raf) {
-                            raf.seek((long) index * ChunkManager.CHUNK_SIZE);
-                            bytesRead = raf.read(buffer);
-                        }
+        // Cada archivo inicia su propio proceso en un hilo virtual
+        executor.submit(() -> {
+            try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(file.toPath(), java.nio.file.StandardOpenOption.READ)) {
+                for (int i = 0; i < totalChunks; i++) {
+                    final int index = i;
+                    long position = (long) index * ChunkManager.CHUNK_SIZE;
+                    int size = (int) Math.min(ChunkManager.CHUNK_SIZE, fileSize - position);
 
-                        if (bytesRead > 0) {
-                            byte[] actualData = bytesRead == ChunkManager.CHUNK_SIZE ? buffer : java.util.Arrays.copyOf(buffer, bytesRead);
+                    java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(size);
+                    channel.read(buffer, position);
+                    buffer.flip();
+                    byte[] actualData = buffer.array();
+
+                    // Enviamos el trozo en paralelo usando otro hilo virtual
+                    executor.submit(() -> {
+                        try {
                             byte[] compressedData = ChunkManager.compress(actualData);
 
                             JettraChunk chunk = JettraChunk.newBuilder()
@@ -58,20 +59,23 @@ public class JettraFileSystem {
                                     .setIsCompressed(true)
                                     .build();
 
-                            // Realizamos la llamada gRPC nativa
-                            client.call("JettraTransferService", "sendChunk", new byte[0]); // MOCKED serialized data for now
+                            // Realizamos la llamada gRPC nativa con el chunk serializado
+                            client.call("JettraTransferService", "sendChunk", chunk.toByteArray());
                             System.out.print(".");
+                        } catch (Exception e) {
+                            System.err.println("\nError enviando trozo " + index + " de " + fileName + ": " + e.getMessage());
                         }
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-                });
+                    });
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
             }
-        }
-
-        executor.shutdown();
-        executor.awaitTermination(1, TimeUnit.HOURS);
-        System.out.println("\nTransferencia completada.");
+        });
     }
 
+    public void waitForCompletion() throws InterruptedException {
+        executor.shutdown();
+        executor.awaitTermination(1, TimeUnit.HOURS);
+        System.out.println("\nTodas las transferencias completadas.");
+    }
 }

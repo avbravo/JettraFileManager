@@ -7,15 +7,20 @@ import io.jettra.fs.grpc.JettraChunk;
 import io.jettra.fs.grpc.JettraTransferService;
 import io.jettra.fs.grpc.TransferStatus;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
 
 public class JettraFileSystemReceptor implements JettraTransferService {
-    private final Map<String, RandomAccessFile> activeFiles = new ConcurrentHashMap<>();
+    private final Map<String, FileChannel> activeChannels = new ConcurrentHashMap<>();
+    private final Map<String, Integer> chunkTracker = new ConcurrentHashMap<>();
     private final String baseDir;
 
     public JettraFileSystemReceptor(String baseDir) {
@@ -129,7 +134,49 @@ public class JettraFileSystemReceptor implements JettraTransferService {
     }
 
     @Override
-    public void sendChunk(JettraChunk chunk, JettraObserver<TransferStatus> responseObserver) {
+    public void call(String methodName, byte[] requestData, io.jettra.grpc.JettraObserver<byte[]> responseObserver) {
+        if ("sendChunk".equals(methodName)) {
+            processRawChunk(requestData, new io.jettra.grpc.JettraObserver<TransferStatus>() {
+                @Override
+                public void onNext(TransferStatus value) {
+                    try {
+                        responseObserver.onNext(value.toByteArray());
+                    } catch (IOException e) {
+                        responseObserver.onError(e);
+                    }
+                }
+
+                @Override
+                public void onError(Throwable t) {
+                    responseObserver.onError(t);
+                }
+
+                @Override
+                public void onCompleted() {
+                    responseObserver.onCompleted();
+                }
+            });
+        } else {
+            responseObserver.onError(new UnsupportedOperationException("Method " + methodName + " not implemented"));
+        }
+    }
+
+    @Override
+    public void sendChunk(JettraChunk chunk, io.jettra.grpc.JettraObserver<TransferStatus> responseObserver) {
+        // This method might be called directly or via reflection/dispatch
+        processChunk(chunk, responseObserver);
+    }
+
+    public void processRawChunk(byte[] data, JettraObserver<TransferStatus> responseObserver) {
+        try {
+            JettraChunk chunk = JettraChunk.fromByteArray(data);
+            processChunk(chunk, responseObserver);
+        } catch (Exception e) {
+            responseObserver.onError(e);
+        }
+    }
+
+    private void processChunk(JettraChunk chunk, JettraObserver<TransferStatus> responseObserver) {
         try {
             String fileId = chunk.getFileId();
             byte[] data = chunk.getData();
@@ -138,40 +185,47 @@ public class JettraFileSystemReceptor implements JettraTransferService {
                 data = ChunkManager.decompress(data);
             }
 
-            RandomAccessFile raf = activeFiles.computeIfAbsent(fileId, id -> {
-                try {
-                    Path path = Paths.get(baseDir, chunk.getFileName());
-                    RandomAccessFile f = new RandomAccessFile(path.toFile(), "rw");
-                    f.setLength(chunk.getFileSize());
-                    return f;
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
-            });
-
-            synchronized (raf) {
-                raf.seek((long) chunk.getChunkIndex() * ChunkManager.CHUNK_SIZE);
-                raf.write(data);
+            // Crear directorio temporal para el archivo (UUID)
+            Path tempDir = Paths.get(baseDir, ".jettra_temp", fileId);
+            if (!java.nio.file.Files.exists(tempDir)) {
+                java.nio.file.Files.createDirectories(tempDir);
             }
 
-            boolean isLast = chunk.getChunkIndex() == chunk.getTotalChunks() - 1;
-            if (isLast) {
-                // Podríamos esperar a que todos los anteriores lleguen, pero RandomAccessFile permite huecos.
-                // En una implementación real, verificaríamos integridad.
-                raf.close();
-                activeFiles.remove(fileId);
+            // Guardar el chunk como archivo físico
+            File chunkFile = new File(tempDir.toFile(), "chunk_" + chunk.getChunkIndex() + ".jtra");
+            try (FileOutputStream fos = new FileOutputStream(chunkFile)) {
+                fos.write(data);
             }
 
-            responseObserver.onNext(TransferStatus.newBuilder()
+            int total = chunk.getTotalChunks();
+            int currentDone = chunkTracker.merge(fileId, 1, Integer::sum);
+            
+            boolean isAllReceived = currentDone == total;
+            
+            if (isAllReceived) {
+                // Reconstruir el archivo original
+                File finalFile = new File(baseDir, chunk.getFileName());
+                ChunkManager.mergeFiles(finalFile, tempDir.toFile(), total);
+                
+                // Limpieza: Borrar chunks y carpeta UUID
+                deleteDirectory(tempDir.toFile());
+                chunkTracker.remove(fileId);
+                
+                System.out.println("Archivo reconstruido y chunks eliminados: " + chunk.getFileName());
+            }
+
+            TransferStatus status = TransferStatus.newBuilder()
                     .setSuccess(true)
-                    .setMessage("Chunk " + chunk.getChunkIndex() + " recibido")
-                    .build());
+                    .setMessage("Chunk " + chunk.getChunkIndex() + " recibido físicamente")
+                    .build();
+            
+            responseObserver.onNext(status);
             responseObserver.onCompleted();
 
         } catch (Exception e) {
             TransferStatus errorStatus = TransferStatus.newBuilder()
                     .setSuccess(false)
-                    .setMessage("Error: " + e.getMessage())
+                    .setMessage("Error en recepción física: " + e.getMessage())
                     .build();
             responseObserver.onNext(errorStatus);
             responseObserver.onError(e);
