@@ -62,7 +62,7 @@ public class JettraFileSystemReceptor implements JettraTransferService {
                 if (!showHidden && f.isHidden()) continue;
                 if (f.isDirectory()) {
                     String name = f.getName();
-                    if (name.equals("node_modules") || name.equals(".m2") || name.equals(".cache") || name.equals(".npm") || name.equals(".git") || name.equals("target") || name.equals("build") || name.equals(".gemini") || name.equals(".var") || name.equals(".local")) {
+                    if (name.equals("node_modules") || name.equals(".m2") || name.equals(".cache") || name.equals(".npm") || name.equals(".git") || name.equals("target") || name.equals("build") || name.equals(".gemini") || name.equals(".var") || name.equals(".local") || name.equals(".jettra_sender_temp") || name.equals(".jettra_receptor_temp")) {
                         map.put(f.getName(), new java.util.LinkedHashMap<>());
                     } else {
                         java.util.Map<String, Object> child = new java.util.LinkedHashMap<>();
@@ -186,7 +186,7 @@ public class JettraFileSystemReceptor implements JettraTransferService {
             }
 
             // Crear directorio temporal para el archivo (UUID)
-            Path tempDir = Paths.get(baseDir, ".jettra_temp", fileId);
+            Path tempDir = Paths.get(baseDir, ".jettra_receptor_temp", fileId);
             if (!java.nio.file.Files.exists(tempDir)) {
                 java.nio.file.Files.createDirectories(tempDir);
             }
@@ -247,6 +247,8 @@ public class JettraFileSystemReceptor implements JettraTransferService {
                 for (java.io.File f : files) {
                     if (!showHidden && f.isHidden()) continue;
                     if (f.isDirectory()) {
+                        String name = f.getName();
+                        if (name.equals(".jettra_sender_temp") || name.equals(".jettra_receptor_temp")) continue;
                         result.put(f.getName(), new java.util.LinkedHashMap<>());
                     } else {
                         result.put(f.getName(), null);

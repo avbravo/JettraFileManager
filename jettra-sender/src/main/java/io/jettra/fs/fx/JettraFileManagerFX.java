@@ -59,8 +59,7 @@ public class JettraFileManagerFX extends Application {
     private final List<String> transferErrors = new CopyOnWriteArrayList<>();
     private Label timerLabel;
     private Timeline timerTimeline;
-    private VBox multiProgressContainer;
-    private ScrollPane progressScrollPane;
+    private TabPane transferTabPane;
     private ComboBox<String> comboProtocol;
     private Label memLabel;
     private ProgressBar memBar;
@@ -74,6 +73,7 @@ public class JettraFileManagerFX extends Application {
 
     @Override
     public void start(Stage primaryStage) {
+        JettraMain.checkSingleInstanceAndCleanup();
         initCharts();
         BorderPane root = new BorderPane();
         root.getStyleClass().add("root");
@@ -179,14 +179,10 @@ public class JettraFileManagerFX extends Application {
             }
         });
 
-        progressScrollPane = new ScrollPane();
-        progressScrollPane.setFitToWidth(true);
-        progressScrollPane.setPrefHeight(150);
-        progressScrollPane.setVisible(false);
-        progressScrollPane.setStyle("-fx-background: transparent; -fx-background-color: transparent;");
-        multiProgressContainer = new VBox(5);
-        multiProgressContainer.setPadding(new Insets(10));
-        progressScrollPane.setContent(multiProgressContainer);
+        transferTabPane = new TabPane();
+        transferTabPane.setPrefHeight(280);
+        transferTabPane.setVisible(false);
+        transferTabPane.setStyle("-fx-background: transparent;");
         
         timerLabel = new Label("00:00:00.000");
         timerLabel.setStyle("-fx-font-family: 'Monospaced'; -fx-font-size: 16px; -fx-text-fill: #00ff00; -fx-font-weight: bold;");
@@ -204,7 +200,7 @@ public class JettraFileManagerFX extends Application {
 
         statusBar.getChildren().addAll(statusLabel, progressBar, timerLabel, animPane, btnCancel, spacer, vThreadLabel, memLabel, memBar);
         
-        VBox bottomContainer = new VBox(0, progressScrollPane, statusBar);
+        VBox bottomContainer = new VBox(0, transferTabPane, statusBar);
         root.setBottom(bottomContainer);
 
         Scene scene = new Scene(root, 1300, 850);
@@ -423,6 +419,26 @@ public class JettraFileManagerFX extends Application {
     }
 
     private void startTransfer(String srcAbs, TreeItem<FileNode> targetItem) {
+        // ---------------------------------------------------------------
+        // 1️⃣  SINGLE‑INSTANCE DETECTION
+        // ---------------------------------------------------------------
+        try {
+            java.nio.file.Path lockPath = java.nio.file.Path.of(System.getProperty("user.home"), ".jettra_sender.lock");
+            if (java.nio.file.Files.exists(lockPath)) {
+                String pidStr = java.nio.file.Files.readString(lockPath).trim();
+                if (!pidStr.isEmpty()) {
+                    long pid = Long.parseLong(pidStr);
+                    if (pid != ProcessHandle.current().pid() && ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)) {
+                        transferErrors.add("Otra instancia de JettraFileSystem está en ejecución (PID=" + pid + "). Operación cancelada.");
+                        showTransferSummary();
+                        return;
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            System.err.println("[WARN] No se pudo verificar el lock: " + ex.getMessage());
+        }
+
         File src = new File(srcAbs);
         if (!src.exists()) {
             transferErrors.add("El origen no existe: " + srcAbs);
@@ -439,7 +455,7 @@ public class JettraFileManagerFX extends Application {
             showTransferSummary();
             return;
         }
-
+        
         if (src.isDirectory() && destBase.getAbsolutePath().startsWith(src.getAbsolutePath() + File.separator)) {
             transferErrors.add("No se puede copiar una carpeta dentro de sí misma.");
             showTransferSummary();
@@ -453,12 +469,12 @@ public class JettraFileManagerFX extends Application {
             if (alert.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
             try { deleteRec(conflict.toPath()); } catch (IOException ex) { ex.printStackTrace(); }
         }
-
+        
         startTimer();
         startChunkAnimation();
         Platform.runLater(() -> {
-            multiProgressContainer.getChildren().clear();
-            progressScrollPane.setVisible(true);
+            transferTabPane.getTabs().clear();
+            transferTabPane.setVisible(true);
         });
 
         currentTransferTask = new Task<>() {
@@ -488,7 +504,11 @@ public class JettraFileManagerFX extends Application {
                     totalChunksAllFiles += totalChunks;
                     TransferRow row = new TransferRow(f.getName(), totalChunks);
                     rowMap.put(f, row);
-                    Platform.runLater(() -> multiProgressContainer.getChildren().add(row));
+                    Platform.runLater(() -> {
+                        Tab tab = new Tab(f.getName());
+                        tab.setContent(new ScrollPane(row));
+                        transferTabPane.getTabs().add(tab);
+                    });
                 }
                 
                 Semaphore semaphore = new Semaphore(16); 
@@ -527,7 +547,6 @@ public class JettraFileManagerFX extends Application {
                 try {
                     totalLatch.await();
                 } catch (InterruptedException e) {
-                    // Si se interrumpe el await, salimos inmediatamente.
                     Thread.currentThread().interrupt();
                 }
                 if (!isCancelled() && isCut) deleteRec(src.toPath());
@@ -535,20 +554,27 @@ public class JettraFileManagerFX extends Application {
             }
 
             private void collectFiles(File dir, List<File> list) {
+                if (dir.getName().equals(".jettra_sender_temp") || dir.getName().equals(".jettra_receptor_temp")) return;
                 File[] fs = dir.listFiles();
-                if (fs != null) for (File f : fs) if (f.isDirectory()) collectFiles(f, list); else list.add(f);
+                if (fs != null) {
+                    for (File f : fs) {
+                        if (f.isDirectory()) {
+                            collectFiles(f, list);
+                        } else {
+                            list.add(f);
+                        }
+                    }
+                }
             }
 
             private void transferFileXStream(File s, File d, String fName, TreeItem<FileNode> targetNode, AtomicLong chunksDoneTotal, long totalChunks, BooleanSupplier isCancelled, BiConsumer<Long, Long> progress, TransferRow row) throws Exception {
                 if (!s.exists()) throw new NoSuchFileException(s.getAbsolutePath());
                 long sz = s.length(); int n = ChunkManager.calculateTotalChunks(sz);
                 
-                // 1. Crear directorio temporal en origen con UUID
                 final String fileId = UUID.randomUUID().toString();
-                File tempDir = new File(s.getParentFile(), ".jettra_sender_temp/" + fileId);
+                File tempDir = new File(System.getProperty("user.home"), ".jettra_sender_temp/" + fileId);
                 tempDir.mkdirs();
                 
-                // 2. Dividir archivo en trozos físicos
                 updateMessage("Dividiendo: " + s.getName());
                 ChunkManager.splitFile(s, tempDir);
                 
@@ -557,7 +583,7 @@ public class JettraFileManagerFX extends Application {
                 AtomicBoolean firstChunkSent = new AtomicBoolean(false);
                 AtomicInteger chunksDoneForFile = new AtomicInteger(0);
                 
-                Semaphore chunkLimit = new Semaphore(16); // Límite de concurrencia por archivo
+                Semaphore chunkLimit = new Semaphore(totalFilesCount < 5 ? 64 : 16);
 
                 for (int i = 0; i < n; i++) {
                     if (isCancelled.getAsBoolean()) break;
@@ -618,8 +644,70 @@ public class JettraFileManagerFX extends Application {
                 
                 fileLatch.await(300, TimeUnit.SECONDS);
                 
-                // 3. Limpieza en origen
                 deleteRec(tempDir.toPath());
+                
+                row.markComplete();
+                Platform.runLater(() -> refreshSpecificNode(targetNode));
+            }
+
+            private void transferFileDirect(File s, File d, String fName, TreeItem<FileNode> targetNode, AtomicLong chunksDoneTotal, long totalChunks, BooleanSupplier isCancelled, BiConsumer<Long, Long> progress, TransferRow row) throws Exception {
+                if (!s.exists()) throw new NoSuchFileException(s.getAbsolutePath());
+                long sz = s.length(); int n = ChunkManager.calculateTotalChunks(sz);
+                
+                File destFile = new File(d, fName);
+                if (destFile.getParentFile() != null) destFile.getParentFile().mkdirs();
+                
+                final String fileId = UUID.randomUUID().toString();
+                File tempSrcDir = new File(System.getProperty("user.home"), ".jettra_sender_temp/" + fileId);
+                ChunkManager.splitFile(s, tempSrcDir);
+
+                File tempDestDir = new File(d, ".jettra_receptor_temp/" + fileId);
+                tempDestDir.mkdirs();
+
+                CountDownLatch fileLatch = new CountDownLatch(n);
+                AtomicInteger chunksDoneForFile = new AtomicInteger(0);
+
+                Semaphore chunkLimit = new Semaphore(totalFilesCount < 5 ? 64 : 16);
+
+                for (int i = 0; i < n; i++) {
+                    if (isCancelled.getAsBoolean()) break;
+                    chunkLimit.acquire();
+                    
+                    final int idx = i;
+                    transferExecutor.submit(() -> {
+                        try {
+                            if (isCancelled.getAsBoolean()) {
+                                fileLatch.countDown();
+                                return;
+                            }
+                            File srcChunk = new File(tempSrcDir, "chunk_" + idx + ".jtra");
+                            File destChunk = new File(tempDestDir, "chunk_" + idx + ".jtra");
+                            Files.copy(srcChunk.toPath(), destChunk.toPath(), StandardCopyOption.REPLACE_EXISTING);
+
+                            fileLatch.countDown();
+                            int done = chunksDoneForFile.incrementAndGet();
+                            row.updateProgress((double) done / n, idx, n);
+                            progress.accept(chunksDoneTotal.incrementAndGet(), totalChunks);
+                        } catch (Exception ex) {
+                            transferErrors.add("Error JettraStream en " + fName + ": " + ex.getMessage());
+                            fileLatch.countDown();
+                        } finally {
+                            chunkLimit.release();
+                        }
+                    });
+                }
+                
+                fileLatch.await(300, TimeUnit.SECONDS);
+                
+                if (isCancelled.getAsBoolean()) {
+                    deleteRec(tempSrcDir.toPath());
+                    deleteRec(tempDestDir.toPath());
+                    return;
+                }
+
+                ChunkManager.mergeFiles(destFile, tempDestDir, n);
+                deleteRec(tempSrcDir.toPath());
+                deleteRec(tempDestDir.toPath());
                 
                 row.markComplete();
                 Platform.runLater(() -> refreshSpecificNode(targetNode));
@@ -654,6 +742,7 @@ public class JettraFileManagerFX extends Application {
         t.setDaemon(true);
         t.start();
     }
+
 
     private void showTransferSummary() {
         Platform.runLater(() -> {
@@ -699,7 +788,7 @@ public class JettraFileManagerFX extends Application {
         statusLabel.textProperty().unbind(); statusLabel.setText(msg + " | Puerto: " + JettraMain.assignedPort);
         Platform.runLater(() -> {
             PauseTransition pause = new PauseTransition(Duration.seconds(5));
-            pause.setOnFinished(ev -> progressScrollPane.setVisible(false));
+            pause.setOnFinished(ev -> transferTabPane.setVisible(false));
             pause.play();
         });
     }
@@ -711,71 +800,12 @@ public class JettraFileManagerFX extends Application {
             @Override public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException { Files.delete(dir); return FileVisitResult.CONTINUE; }
         });
     }
-
-    private void transferFileDirect(File s, File d, String fName, TreeItem<FileNode> targetNode, AtomicLong chunksDoneTotal, long totalChunks, BooleanSupplier isCancelled, BiConsumer<Long, Long> progress, TransferRow row) throws Exception {
-        if (!s.exists()) throw new NoSuchFileException(s.getAbsolutePath());
-        long sz = s.length(); int n = ChunkManager.calculateTotalChunks(sz);
-        File destFile = new File(d, fName);
-        if (destFile.getParentFile() != null) destFile.getParentFile().mkdirs();
-        
-        // 1. Crear directorio temporal en origen
-        final String fileId = UUID.randomUUID().toString();
-        File tempSrcDir = new File(s.getParentFile(), ".jettra_sender_temp/" + fileId);
-        ChunkManager.splitFile(s, tempSrcDir);
-
-        // 2. Crear directorio temporal en destino
-        File tempDestDir = new File(d, ".jettra_temp/" + fileId);
-        tempDestDir.mkdirs();
-
-        CountDownLatch fileLatch = new CountDownLatch(n);
-        AtomicInteger chunksDoneForFile = new AtomicInteger(0);
-
-        for (int i = 0; i < n; i++) {
-            if (isCancelled.getAsBoolean()) break;
-            
-            final int idx = i;
-            transferExecutor.submit(() -> {
-                try {
-                    if (isCancelled.getAsBoolean()) {
-                        fileLatch.countDown();
-                        return;
-                    }
-                    // Simular movimiento de chunk físico
-                    File srcChunk = new File(tempSrcDir, "chunk_" + idx + ".jtra");
-                    File destChunk = new File(tempDestDir, "chunk_" + idx + ".jtra");
-                    Files.copy(srcChunk.toPath(), destChunk.toPath(), StandardCopyOption.REPLACE_EXISTING);
-
-                    fileLatch.countDown();
-                    int done = chunksDoneForFile.incrementAndGet();
-                    row.updateProgress((double) done / n, idx, n);
-                    progress.accept(chunksDoneTotal.incrementAndGet(), totalChunks);
-                } catch (Exception ex) {
-                    transferErrors.add("Error JettraStream en " + fName + ": " + ex.getMessage());
-                    fileLatch.countDown();
-                }
-            });
-        }
-        
-        fileLatch.await(300, TimeUnit.SECONDS);
-        
-        // 3. Reconstrucción y limpieza
-        if (!isCancelled.getAsBoolean()) {
-            ChunkManager.mergeFiles(destFile, tempDestDir, n);
-        }
-        
-        deleteRec(tempSrcDir.toPath());
-        deleteRec(tempDestDir.toPath());
-        
-        row.markComplete();
-        Platform.runLater(() -> refreshSpecificNode(targetNode));
-    }
-
     private String formatDuration(long millis) {
-        long h = millis / 3600000;
-        long m = (millis % 3600000) / 60000;
-        long s = (millis % 60000) / 1000;
+        long hours = millis / 3600000;
+        long minutes = (millis % 3600000) / 60000;
+        long seconds = (millis % 60000) / 1000;
         long ms = millis % 1000;
-        return String.format("%02d:%02d:%02d.%03d", h, m, s, ms);
+        return String.format("%02d:%02d:%02d.%03d", hours, minutes, seconds, ms);
     }
 
     private void startTimer() {
@@ -793,52 +823,92 @@ public class JettraFileManagerFX extends Application {
         if (timerTimeline != null) timerTimeline.stop();
     }
 
-    static class TransferRow extends HBox {
+    static class TransferRow extends VBox {
         ProgressBar bar;
         Label label;
-        FlowPane blocks;
-        Rectangle[] chunkRects;
+        FlowPane senderBlocks;
+        FlowPane receptorBlocks;
+        Rectangle[] senderRects;
+        Rectangle[] receptorRects;
 
         TransferRow(String fileName, int totalChunks) {
             setSpacing(15);
-            setAlignment(Pos.CENTER_LEFT);
-            setPadding(new Insets(8));
-            setStyle("-fx-background-color: rgba(0, 255, 255, 0.05); -fx-background-radius: 10; -fx-border-color: rgba(0, 255, 255, 0.2); -fx-border-radius: 10;");
+            setAlignment(Pos.TOP_CENTER);
+            setPadding(new Insets(15));
+            setStyle("-fx-background-color: #1a1a1a; -fx-background-radius: 10; -fx-border-color: rgba(0, 255, 255, 0.2); -fx-border-radius: 10;");
 
-            label = new Label(fileName);
-            label.setPrefWidth(250);
-            label.setStyle("-fx-text-fill: #e0e0e0; -fx-font-weight: bold;");
+            label = new Label("Transfiriendo: " + fileName);
+            label.setStyle("-fx-text-fill: #e0e0e0; -fx-font-size: 16px; -fx-font-weight: bold;");
 
             bar = new ProgressBar(0);
-            bar.setPrefWidth(180);
+            bar.setPrefWidth(400);
             bar.setStyle("-fx-accent: #00ffff;");
 
-            blocks = new FlowPane(3, 3);
-            blocks.setPrefWrapLength(500);
-            int displayChunks = Math.min(totalChunks, 100);
-            chunkRects = new Rectangle[displayChunks];
+            HBox cubesBox = new HBox(40);
+            cubesBox.setAlignment(Pos.CENTER);
+
+            VBox senderBox = new VBox(5);
+            senderBox.setAlignment(Pos.CENTER);
+            Label lblSender = new Label("Sender (Descomposición)");
+            lblSender.setStyle("-fx-text-fill: #00ffff;");
+            senderBox.getChildren().add(lblSender);
+            senderBlocks = new FlowPane(3, 3);
+            senderBlocks.setPrefWrapLength(300);
+            
+            VBox receptorBox = new VBox(5);
+            receptorBox.setAlignment(Pos.CENTER);
+            Label lblReceptor = new Label("Receptor (Unión)");
+            lblReceptor.setStyle("-fx-text-fill: #00ff00;");
+            receptorBox.getChildren().add(lblReceptor);
+            receptorBlocks = new FlowPane(3, 3);
+            receptorBlocks.setPrefWrapLength(300);
+
+            int displayChunks = Math.min(totalChunks, 200);
+            senderRects = new Rectangle[displayChunks];
+            receptorRects = new Rectangle[displayChunks];
+            
             for (int i = 0; i < displayChunks; i++) {
-                Rectangle r = new Rectangle(10, 10, Color.web("#333333"));
-                r.setArcHeight(3); r.setArcWidth(3);
-                chunkRects[i] = r;
-                blocks.getChildren().add(r);
+                Rectangle sr = new Rectangle(10, 10, Color.CYAN);
+                sr.setArcHeight(3); sr.setArcWidth(3);
+                senderRects[i] = sr;
+                senderBlocks.getChildren().add(sr);
+                
+                Rectangle rr = new Rectangle(10, 10, Color.web("#333333"));
+                rr.setArcHeight(3); rr.setArcWidth(3);
+                receptorRects[i] = rr;
+                receptorBlocks.getChildren().add(rr);
             }
 
-            getChildren().addAll(label, bar, blocks);
+            senderBox.getChildren().add(senderBlocks);
+            receptorBox.getChildren().add(receptorBlocks);
+
+            Label arrow = new Label("➔");
+            arrow.setStyle("-fx-font-size: 36px; -fx-text-fill: #555555;");
+
+            cubesBox.getChildren().addAll(senderBox, arrow, receptorBox);
+
+            getChildren().addAll(label, bar, cubesBox);
         }
 
         void updateProgress(double progress, int chunkIndex, int totalChunks) {
             Platform.runLater(() -> {
                 bar.setProgress(progress);
-                int rectIdx = (int) (((double) chunkIndex / totalChunks) * chunkRects.length);
-                if (rectIdx >= 0 && rectIdx < chunkRects.length) {
-                    Rectangle r = chunkRects[rectIdx];
-                    r.setFill(Color.CYAN);
+                int rectIdx = (int) (((double) chunkIndex / totalChunks) * senderRects.length);
+                if (rectIdx >= 0 && rectIdx < senderRects.length) {
+                    Rectangle sr = senderRects[rectIdx];
+                    Rectangle rr = receptorRects[rectIdx];
                     
-                    // Efecto de pulso al llenar
-                    ScaleTransition pulse = new ScaleTransition(Duration.millis(300), r);
-                    pulse.setFromX(1.0); pulse.setFromY(1.0);
-                    pulse.setToX(1.5); pulse.setToY(1.5);
+                    FadeTransition ftOut = new FadeTransition(Duration.millis(300), sr);
+                    ftOut.setToValue(0.1);
+                    ScaleTransition stOut = new ScaleTransition(Duration.millis(300), sr);
+                    stOut.setToX(0.5); stOut.setToY(0.5);
+                    ParallelTransition ptOut = new ParallelTransition(ftOut, stOut);
+                    ptOut.play();
+                    
+                    rr.setFill(Color.CYAN);
+                    ScaleTransition pulse = new ScaleTransition(Duration.millis(300), rr);
+                    pulse.setFromX(0.5); pulse.setFromY(0.5);
+                    pulse.setToX(1.3); pulse.setToY(1.3);
                     pulse.setAutoReverse(true);
                     pulse.setCycleCount(2);
                     pulse.play();
@@ -848,8 +918,8 @@ public class JettraFileManagerFX extends Application {
         
         void markComplete() {
             Platform.runLater(() -> {
-                for (Rectangle r : chunkRects) {
-                    r.setFill(Color.web("#00ff00"));
+                for (Rectangle rr : receptorRects) {
+                    rr.setFill(Color.web("#00ff00"));
                 }
                 bar.setProgress(1.0);
                 animateReconstruction();
@@ -862,12 +932,11 @@ public class JettraFileManagerFX extends Application {
             
             ParallelTransition pt = new ParallelTransition();
             
-            // Animación de "fusión" hacia el centro
-            for (int i = 0; i < chunkRects.length; i++) {
-                Rectangle r = chunkRects[i];
+            for (int i = 0; i < receptorRects.length; i++) {
+                Rectangle r = receptorRects[i];
                 TranslateTransition tt = new TranslateTransition(Duration.millis(800), r);
-                tt.setToX(blocks.getWidth() / 2 - r.getLayoutX());
-                tt.setToY(blocks.getHeight() / 2 - r.getLayoutY());
+                tt.setToX(receptorBlocks.getWidth() / 2 - r.getLayoutX());
+                tt.setToY(receptorBlocks.getHeight() / 2 - r.getLayoutY());
                 
                 RotateTransition rt = new RotateTransition(Duration.millis(800), r);
                 rt.setToAngle(360);
@@ -884,11 +953,10 @@ public class JettraFileManagerFX extends Application {
                 
                 PauseTransition wait = new PauseTransition(Duration.seconds(1.2));
                 wait.setOnFinished(ev -> {
-                    label.setText("✅ Archivo Reconstruido: " + label.getText().replace("🏗️ Construyendo archivo...", ""));
+                    label.setText("✅ Archivo Reconstruido");
                     label.setStyle("-fx-text-fill: #00ff00; -fx-font-weight: bold;");
-                    getChildren().remove(blocks);
+                    if (getChildren().size() > 2) getChildren().remove(2);
                     
-                    // Pequeño destello final
                     Glow glow = new Glow(0);
                     label.setEffect(glow);
                     Timeline pulse = new Timeline(
@@ -914,6 +982,7 @@ public class JettraFileManagerFX extends Application {
         virtualExecutor.shutdownNow();
         new Thread(() -> {
             try { 
+                JettraMain.checkSingleInstanceAndCleanup();
                 JettraMain.stopReceptor(); 
                 Thread.sleep(100);
             } catch (Exception e) {}

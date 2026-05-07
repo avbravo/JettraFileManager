@@ -20,6 +20,8 @@ public class JettraMain {
     }
 
     public static void main(String[] args) throws Exception {
+        checkSingleInstanceAndCleanup();
+        
         // Simulación de detección de unidad en directorio local accesible
         String targetDrive = "/home/avbravo/NetBeansProjects/jettrastack_local/JettraWorkspace/JettraFileManager/simulated_drive";
         java.io.File simDir = new java.io.File(targetDrive);
@@ -135,5 +137,41 @@ public class JettraMain {
                 e.printStackTrace();
             }
         }).start();
+    }
+
+    public static void checkSingleInstanceAndCleanup() {
+        try {
+            java.nio.file.Path lockPath = java.nio.file.Path.of(System.getProperty("user.home"), ".jettra_sender.lock");
+            if (java.nio.file.Files.exists(lockPath)) {
+                String pidStr = java.nio.file.Files.readString(lockPath).trim();
+                if (!pidStr.isEmpty()) {
+                    long pid = Long.parseLong(pidStr);
+                    if (pid != ProcessHandle.current().pid() && ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)) {
+                        System.err.println("Otra instancia de JettraFileSystem está en ejecución (PID=" + pid + "). Cerrando...");
+                        System.exit(1);
+                    }
+                }
+            }
+            // Create lock
+            java.nio.file.Files.writeString(lockPath, String.valueOf(ProcessHandle.current().pid()));
+            lockPath.toFile().deleteOnExit();
+
+            // Cleanup temp folders
+            java.nio.file.Path senderTemp = java.nio.file.Path.of(System.getProperty("user.home"), ".jettra_sender_temp");
+            java.nio.file.Path receptorTemp = java.nio.file.Path.of(System.getProperty("user.home"), ".jettra_receptor_temp");
+            deleteRec(senderTemp);
+            deleteRec(receptorTemp);
+            
+        } catch (Exception ex) {
+            System.err.println("[WARN] No se pudo verificar el lock o limpiar temps: " + ex.getMessage());
+        }
+    }
+
+    public static void deleteRec(java.nio.file.Path path) throws IOException {
+        if (!java.nio.file.Files.exists(path)) return;
+        java.nio.file.Files.walkFileTree(path, new java.nio.file.SimpleFileVisitor<>() {
+            @Override public java.nio.file.FileVisitResult visitFile(java.nio.file.Path file, java.nio.file.attribute.BasicFileAttributes attrs) throws IOException { java.nio.file.Files.delete(file); return java.nio.file.FileVisitResult.CONTINUE; }
+            @Override public java.nio.file.FileVisitResult postVisitDirectory(java.nio.file.Path dir, IOException exc) throws IOException { java.nio.file.Files.delete(dir); return java.nio.file.FileVisitResult.CONTINUE; }
+        });
     }
 }
