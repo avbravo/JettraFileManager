@@ -1,0 +1,172 @@
+.root {
+    -fx-base: #0a0a0a;
+    -fx-background-color: #0d0d0d;
+    background-color: #0d0d0d;
+    -fx-control-inner-background: #141414;
+    -fx-accent: #00ffff;
+    -fx-default-button: #00ffff;
+    -fx-focus-color: #00ffff;
+    -fx-faint-focus-color: #00ffff22;
+}
+
+.label {
+    -fx-text-fill: #e0e0e0;
+    color: #e0e0e0;
+}
+
+.button {
+    -fx-background-color: transparent;
+    background-color: transparent;
+    -fx-border-color: rgba(0, 255, 255, 0.3);
+    border-color: rgba(0, 255, 255, 0.3);
+    -fx-border-radius: 5;
+    border-radius: 5px;
+    -fx-text-fill: #00ffff;
+    color: #00ffff;
+    -fx-padding: 5 15;
+    padding: 5px 15px;
+    -fx-cursor: hand;
+    cursor: pointer;
+}
+
+.button:hover {
+    -fx-background-color: rgba(0, 255, 255, 0.1);
+    background-color: rgba(0, 255, 255, 0.1);
+    -fx-border-color: #00ffff;
+    border-color: #00ffff;
+    -fx-effect: dropshadow(three-pass-box, #00ffff, 10, 0, 0, 0);
+}
+
+.btn-exit {
+    -fx-border-color: rgba(255, 68, 68, 0.3);
+    border-color: rgba(255, 68, 68, 0.3);
+    -fx-text-fill: #ff4444;
+    color: #ff4444;
+}
+
+.btn-exit:hover {
+    -fx-background-color: rgba(255, 68, 68, 0.1);
+    background-color: rgba(255, 68, 68, 0.1);
+    -fx-border-color: #ff4444;
+    border-color: #ff4444;
+    -fx-effect: dropshadow(three-pass-box, #ff4444, 10, 0, 0, 0);
+}
+
+
+.btn-kill {
+    -fx-border-color: rgba(255, 165, 0, 0.3);
+    border-color: rgba(255, 165, 0, 0.3);
+    -fx-text-fill: #ffa500;
+    color: #ffa500;
+}
+
+.btn-kill:hover {
+    -fx-background-color: rgba(255, 165, 0, 0.1);
+    background-color: rgba(255, 165, 0, 0.1);
+    -fx-border-color: #ffa500;
+    border-color: #ffa500;
+    -fx-effect: dropshadow(three-pass-box, #ffa500, 10, 0, 0, 0);
+}
+
+
+
+.tree-view, .list-view {
+    -fx-background-color: rgba(20, 20, 20, 0.8);
+    background-color: rgba(20, 20, 20, 0.8);
+    -fx-border-color: rgba(0, 255, 255, 0.1);
+    border-color: rgba(0, 255, 255, 0.1);
+    -fx-border-radius: 10;
+    border-radius: 10px;
+    -fx-padding: 10;
+    padding: 10px;
+}
+
+.tree-cell {
+    -fx-background-color: transparent;
+    background-color: transparent;
+    -fx-text-fill: #b0b0b0;
+    color: #b0b0b0;
+    -fx-padding: 3 5;
+    padding: 3px 5px;
+}
+
+.tree-cell:filled:hover {
+    -fx-background-color: rgba(0, 255, 255, 0.05);
+    background-color: rgba(0, 255, 255, 0.05);
+    -fx-text-fill: #ffffff;
+    color: #ffffff;
+}
+
+.tree-cell:filled:selected {
+    -fx-background-color: rgba(0, 255, 255, 0.15);
+    background-color: rgba(0, 255, 255, 0.15);
+    -fx-text-fill: #00ffff;
+    color: #00ffff;
+    -fx-border-color: rgba(0, 255, 255, 0.3);
+    border-color: rgba(0, 255, 255, 0.3);
+    -fx-border-width: 0 0 0 3;
+    border-width: 0 0 0 3px;
+}
+
+.header-label {
+    -fx-font-size: 24;
+    font-size: 24px;
+    -fx-font-weight: bold;
+    font-weight: bold;
+    -fx-text-fill: #00ffff;
+    color: #00ffff;
+    -fx-effect: dropshadow(three-pass-box, #00ffff, 20, 0.5, 0, 0);
+}
+
+.pane-header {
+    -fx-font-size: 16;
+    font-size: 16px;
+    -fx-text-fill: #00ffff;
+    color: #00ffff;
+    -fx-border-color: rgba(0, 255, 255, 0.2);
+    border-color: rgba(0, 255, 255, 0.2);
+    -fx-border-width: 0 0 1 0;
+    border-width: 0 0 1px 0;
+    -fx-padding: 5;
+    padding: 5px;
+    -fx-margin: 0 0 10 0;
+    margin: 0 0 10px 0;
+}
+
+.status-bar {
+    -fx-padding: 5;
+    padding: 5px;
+    -fx-border-color: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.1);
+    -fx-border-width: 1 0 0 0;
+    border-width: 1px 0 0 0;
+}
+
+.sidebar {
+    -fx-padding: 20;
+    padding: 20px;
+    -fx-background-color: rgba(0, 0, 0, 0.3);
+    background-color: rgba(0, 0, 0, 0.3);
+    -fx-border-color: rgba(0, 255, 255, 0.1);
+    border-color: rgba(0, 255, 255, 0.1);
+    -fx-border-width: 0 1 0 0;
+    border-width: 0 1px 0 0;
+}
+
+.device-item {
+    -fx-padding: 10;
+    padding: 10px;
+    -fx-border-color: rgba(0, 255, 255, 0.1);
+    border-color: rgba(0, 255, 255, 0.1);
+    -fx-border-radius: 5;
+    border-radius: 5px;
+    -fx-margin: 5 0;
+    margin: 5px 0;
+    -fx-cursor: hand;
+    cursor: pointer;
+}
+
+.device-item:hover {
+    -fx-background-color: rgba(0, 255, 255, 0.1);
+    background-color: rgba(0, 255, 255, 0.1);
+}

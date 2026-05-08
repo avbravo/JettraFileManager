@@ -14,7 +14,10 @@ import java.io.RandomAccessFile;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.Files;
+import java.util.Comparator;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
 
@@ -22,9 +25,38 @@ public class JettraFileSystemReceptor implements JettraTransferService {
     private final Map<String, FileChannel> activeChannels = new ConcurrentHashMap<>();
     private final Map<String, Integer> chunkTracker = new ConcurrentHashMap<>();
     private final String baseDir;
+    private FileLock instanceLock;
+    private FileChannel lockChannel;
 
     public JettraFileSystemReceptor(String baseDir) {
         this.baseDir = baseDir;
+        initializeInstance();
+    }
+
+    private void initializeInstance() {
+        try {
+            File tempDir = new File(baseDir, ".jettra_receptor_temp");
+            if (!tempDir.exists()) tempDir.mkdirs();
+
+            File lockFile = new File(tempDir, ".lock");
+            lockChannel = FileChannel.open(lockFile.toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+            instanceLock = lockChannel.tryLock();
+
+            if (instanceLock == null) {
+                System.err.println("Error: Ya hay otra instancia de JettraFileSystem Receptor en ejecución.");
+                System.exit(1);
+            }
+
+            // Limpieza inicial: Borrar todo en tempDir excepto el archivo .lock
+            Files.walk(tempDir.toPath())
+                 .sorted(Comparator.reverseOrder())
+                 .map(Path::toFile)
+                 .filter(f -> !f.getName().equals(".lock") && !f.equals(tempDir))
+                 .forEach(File::delete);
+            System.out.println("Limpieza de .jettra_receptor_temp completada.");
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     public String getBaseDir() {
@@ -116,7 +148,9 @@ public class JettraFileSystemReceptor implements JettraTransferService {
             Path dest = Paths.get(baseDir, destPath);
             
             if (java.nio.file.Files.isDirectory(source)) {
-                java.nio.file.Files.walk(source).forEach(s -> {
+                java.nio.file.Files.walk(source)
+                    .filter(s -> !s.toString().contains(".jettra_sender_temp") && !s.toString().contains(".jettra_receptor_temp"))
+                    .forEach(s -> {
                     try {
                         java.nio.file.Files.copy(s, dest.resolve(source.relativize(s)), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                     } catch (IOException e) {
