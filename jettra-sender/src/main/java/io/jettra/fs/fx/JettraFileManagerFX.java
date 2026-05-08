@@ -773,7 +773,6 @@ public class JettraFileManagerFX extends Application {
                 }
                 
                 if (isCancelled.getAsBoolean()) return;
-                row.markComplete();
                 Platform.runLater(() -> refreshSpecificNode(targetNode));
             }
         };
@@ -1088,9 +1087,16 @@ public class JettraFileManagerFX extends Application {
             getChildren().addAll(label, bar, cubesBox);
         }
 
+        private long lastUpdate = 0;
         void updateProgress(double progress, int chunkIndex, int totalChunks) {
+            long now = System.currentTimeMillis();
+            boolean force = progress >= 1.0;
+            if (!force && now - lastUpdate < 200) return; // Throttle a 5 FPS para UI
+            lastUpdate = now;
+
             Platform.runLater(() -> {
                 bar.setProgress(progress);
+                if (senderRects == null || senderRects.length == 0) return;
                 int rectIdx = (int) (((double) chunkIndex / totalChunks) * senderRects.length);
                 if (rectIdx >= 0 && rectIdx < senderRects.length) {
                     Rectangle sr = senderRects[rectIdx];
@@ -1163,7 +1169,7 @@ public class JettraFileManagerFX extends Application {
                     if (tab != null) {
                         transferTabPane.getTabs().remove(tab);
                     }
-                    if (parentContainer != null) {
+                    if (parentContainer != null && !vBoxTerminados.getChildren().contains(this)) {
                         vBoxTerminados.getChildren().add(0, this);
                     }
 
