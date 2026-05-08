@@ -9,8 +9,8 @@ io/jettra/fs/fx/JettraFileManagerFX$2.class
 io/jettra/fs/fx/JettraFileManagerFX$FileTreeCell.class
 io/jettra/fs/fx/JettraFileManagerFX$1.class
 io/jettra/fs/sender/FileOperationsRest.class
-io/jettra/fs/fx/JettraFileManagerFX$TransferRow.class
 io/jettra/fs/fx/JettraFileManagerFX.class
-io/jettra/fs/shell/JettraShell.class
+io/jettra/fs/fx/JettraFileManagerFX$TransferRow.class
 io/jettra/fs/sender/JettraMain.class
+io/jettra/fs/shell/JettraShell.class
 io/jettra/fs/wui/FileManagerPage.class

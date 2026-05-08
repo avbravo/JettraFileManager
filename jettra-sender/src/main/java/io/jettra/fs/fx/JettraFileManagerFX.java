@@ -37,6 +37,18 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoClients;
+import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.MongoIterable;
+import com.mongodb.client.MongoCollection;
+import org.bson.Document;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.util.ArrayList;
+
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 
@@ -60,6 +72,9 @@ public class JettraFileManagerFX extends Application {
     private Label timerLabel;
     private Timeline timerTimeline;
     private TabPane transferTabPane;
+    private VBox vBoxTerminados;
+    private Tab tabTerminados;
+    private CheckBox checkShowDetailedProgress;
     private ComboBox<String> comboProtocol;
     private Label memLabel;
     private ProgressBar memBar;
@@ -128,9 +143,26 @@ public class JettraFileManagerFX extends Application {
         // Inicialización: En modo Directo (predeterminado), el receptor debe estar apagado
         virtualExecutor.submit(() -> { try { JettraMain.stopReceptor(); } catch(Exception ex){} });
         
-        toolbar.getChildren().addAll(btnRefresh, btnPaste, btnExit, btnKill, new Label("Protocolo:"), comboProtocol);
+        Menu menuMongoDB = new Menu("MongoDB");
+        MenuItem mnuViewDBs = new MenuItem("Ver Bases de Datos y Colecciones");
+        MenuItem mnuBackup = new MenuItem("Backup MongoDB");
+        MenuItem mnuRestore = new MenuItem("Restore MongoDB");
+        
+        mnuViewDBs.setOnAction(e -> showMongoViewer());
+        mnuBackup.setOnAction(e -> showMongoBackup());
+        mnuRestore.setOnAction(e -> showMongoRestore());
+        menuMongoDB.getItems().addAll(mnuViewDBs, mnuBackup, mnuRestore);
 
-        topBox.getChildren().addAll(title, toolbar);
+        MenuBar menuBar = new MenuBar();
+        menuBar.getMenus().add(menuMongoDB);
+
+        checkShowDetailedProgress = new CheckBox("Mostrar progreso por archivo");
+        checkShowDetailedProgress.setSelected(false);
+        checkShowDetailedProgress.setStyle("-fx-text-fill: #00ffff;");
+
+        toolbar.getChildren().addAll(btnRefresh, btnPaste, btnExit, btnKill, new Label("Protocolo:"), comboProtocol, checkShowDetailedProgress);
+
+        topBox.getChildren().addAll(menuBar, title, toolbar);
         root.setTop(topBox);
 
         VBox sidebar = new VBox(10);
@@ -183,6 +215,15 @@ public class JettraFileManagerFX extends Application {
         transferTabPane.setPrefHeight(280);
         transferTabPane.setVisible(false);
         transferTabPane.setStyle("-fx-background: transparent;");
+
+        vBoxTerminados = new VBox(10);
+        vBoxTerminados.setPadding(new Insets(10));
+        ScrollPane scrollTerminados = new ScrollPane(vBoxTerminados);
+        scrollTerminados.setFitToWidth(true);
+        scrollTerminados.setStyle("-fx-background: transparent; -fx-background-color: transparent;");
+        tabTerminados = new Tab("✅ Terminados", scrollTerminados);
+        tabTerminados.setClosable(false);
+        transferTabPane.getTabs().add(tabTerminados);
         
         timerLabel = new Label("00:00:00.000");
         timerLabel.setStyle("-fx-font-family: 'Monospaced'; -fx-font-size: 16px; -fx-text-fill: #00ff00; -fx-font-weight: bold;");
@@ -431,6 +472,7 @@ public class JettraFileManagerFX extends Application {
                     if (pid != ProcessHandle.current().pid() && ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)) {
                         transferErrors.add("Otra instancia de JettraFileSystem está en ejecución (PID=" + pid + "). Operación cancelada.");
                         showTransferSummary();
+                        System.out.println("Pegado cancelado: otra instancia en ejecución.");
                         return;
                     }
                 }
@@ -443,9 +485,12 @@ public class JettraFileManagerFX extends Application {
         if (!src.exists()) {
             transferErrors.add("El origen no existe: " + srcAbs);
             showTransferSummary();
+            System.out.println("Pegado cancelado: El origen no existe.");
             return;
         }
         String targetAbs = getAbs(targetItem.getValue(), targetItem);
+        System.out.println(">>> Iniciando transferencia desde: " + srcAbs + " hacia: " + targetAbs);
+        
         File destBase = new File(targetAbs).isDirectory() ? new File(targetAbs) : new File(targetAbs).getParentFile();
         final TreeItem<FileNode> refreshItem = targetItem.getValue().isDirectory ? targetItem : targetItem.getParent();
         File conflict = new File(destBase, src.getName());
@@ -453,20 +498,26 @@ public class JettraFileManagerFX extends Application {
         if (conflict.getAbsolutePath().equals(src.getAbsolutePath())) {
             transferErrors.add("No se puede copiar un archivo o carpeta sobre sí mismo.");
             showTransferSummary();
+            System.out.println("Pegado cancelado: Copia sobre sí mismo.");
             return;
         }
         
         if (src.isDirectory() && destBase.getAbsolutePath().startsWith(src.getAbsolutePath() + File.separator)) {
             transferErrors.add("No se puede copiar una carpeta dentro de sí misma.");
             showTransferSummary();
+            System.out.println("Pegado cancelado: Carpeta recursiva.");
             return;
         }
         
         if (conflict.exists()) {
+            System.out.println("Conflicto de archivo detectado: " + conflict.getName());
             Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
             alert.setHeaderText("Reemplazar existente");
             alert.setContentText("¿Confirmas el reemplazo de '" + src.getName() + "'?");
-            if (alert.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
+            if (alert.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) {
+                System.out.println("Pegado cancelado por el usuario (No reemplazar).");
+                return;
+            }
             try { deleteRec(conflict.toPath()); } catch (IOException ex) { ex.printStackTrace(); }
         }
         
@@ -486,6 +537,7 @@ public class JettraFileManagerFX extends Application {
 
             @Override
             protected Void call() throws Exception {
+                System.out.println("--- Ejecutando hilo de transferencia ---");
                 File src = new File(srcAbs);
                 if (!src.exists()) throw new NoSuchFileException(srcAbs);
                 
@@ -497,21 +549,39 @@ public class JettraFileManagerFX extends Application {
                 List<File> allFiles = new ArrayList<>();
                 if (src.isDirectory()) collectFiles(src, allFiles); else allFiles.add(src);
                 totalFilesCount = allFiles.size();
+                long totalBytes = allFiles.stream().mapToLong(File::length).sum();
+                final String sizeFormatted = formatBytes(totalBytes);
                 
+                System.out.println("Total de archivos a transferir: " + totalFilesCount + " (" + sizeFormatted + ")");
+                if (totalFilesCount == 0) {
+                    System.out.println("No hay archivos para transferir.");
+                    return null;
+                }
+                
+                updateMessage(String.format("Archivos completados: 0 / %d (%s)", totalFilesCount, sizeFormatted));
+                
+                VBox activeBox = new VBox(10);
+                activeBox.setPadding(new Insets(10));
+
+                boolean showTabs = checkShowDetailedProgress.isSelected();
                 for (File f : allFiles) {
                     long fSize = f.length();
                     int totalChunks = ChunkManager.calculateTotalChunks(fSize);
                     totalChunksAllFiles += totalChunks;
-                    TransferRow row = new TransferRow(f.getName(), totalChunks);
+                    TransferRow row = new TransferRow(f.getName(), totalChunks, activeBox);
                     rowMap.put(f, row);
-                    Platform.runLater(() -> {
-                        Tab tab = new Tab(f.getName());
-                        tab.setContent(new ScrollPane(row));
-                        transferTabPane.getTabs().add(tab);
-                    });
+                    
+                    if (showTabs) {
+                        Platform.runLater(() -> {
+                            Tab tab = new Tab(f.getName());
+                            tab.setContent(new ScrollPane(row));
+                            row.setTab(tab);
+                            transferTabPane.getTabs().add(0, tab);
+                        });
+                    }
                 }
                 
-                Semaphore semaphore = new Semaphore(16); 
+                Semaphore semaphore = new Semaphore(4); // Optimizado para USB/HDD: 4 archivos concurrentes máximo
                 CountDownLatch totalLatch = new CountDownLatch(totalFilesCount);
 
                 for (File f : allFiles) {
@@ -532,7 +602,8 @@ public class JettraFileManagerFX extends Application {
                             }
                             
                             filesDone.incrementAndGet();
-                            updateMessage(String.format("Transferido: %d/%d | %s", filesDone.get(), totalFilesCount, f.getName()));
+                            updateMessage(String.format("Archivos completados: %d / %d (%s)", filesDone.get(), totalFilesCount, sizeFormatted));
+                            row.markComplete();
                         } catch (InterruptedException ie) {
                             Thread.currentThread().interrupt();
                         } catch (Exception ex) { 
@@ -583,7 +654,7 @@ public class JettraFileManagerFX extends Application {
                 AtomicBoolean firstChunkSent = new AtomicBoolean(false);
                 AtomicInteger chunksDoneForFile = new AtomicInteger(0);
                 
-                Semaphore chunkLimit = new Semaphore(totalFilesCount < 5 ? 64 : 16);
+                Semaphore chunkLimit = new Semaphore(4096);
 
                 for (int i = 0; i < n; i++) {
                     if (isCancelled.getAsBoolean()) break;
@@ -646,7 +717,6 @@ public class JettraFileManagerFX extends Application {
                 
                 deleteRec(tempDir.toPath());
                 
-                row.markComplete();
                 Platform.runLater(() -> refreshSpecificNode(targetNode));
             }
 
@@ -656,59 +726,53 @@ public class JettraFileManagerFX extends Application {
                 
                 File destFile = new File(d, fName);
                 if (destFile.getParentFile() != null) destFile.getParentFile().mkdirs();
-                
-                final String fileId = UUID.randomUUID().toString();
-                File tempSrcDir = new File(System.getProperty("user.home"), ".jettra_sender_temp/" + fileId);
-                ChunkManager.splitFile(s, tempSrcDir);
 
-                File tempDestDir = new File(d, ".jettra_receptor_temp/" + fileId);
-                tempDestDir.mkdirs();
-
-                CountDownLatch fileLatch = new CountDownLatch(n);
-                AtomicInteger chunksDoneForFile = new AtomicInteger(0);
-
-                Semaphore chunkLimit = new Semaphore(totalFilesCount < 5 ? 64 : 16);
-
-                for (int i = 0; i < n; i++) {
-                    if (isCancelled.getAsBoolean()) break;
-                    chunkLimit.acquire();
-                    
-                    final int idx = i;
-                    transferExecutor.submit(() -> {
-                        try {
-                            if (isCancelled.getAsBoolean()) {
-                                fileLatch.countDown();
-                                return;
-                            }
-                            File srcChunk = new File(tempSrcDir, "chunk_" + idx + ".jtra");
-                            File destChunk = new File(tempDestDir, "chunk_" + idx + ".jtra");
-                            Files.copy(srcChunk.toPath(), destChunk.toPath(), StandardCopyOption.REPLACE_EXISTING);
-
-                            fileLatch.countDown();
-                            int done = chunksDoneForFile.incrementAndGet();
-                            row.updateProgress((double) done / n, idx, n);
+                // OPTIMIZACIÓN ULTRA: Pre-asignación y escritura directa en paralelo con zero-copy manual
+                try (RandomAccessFile raf = new RandomAccessFile(destFile, "rw")) {
+                    raf.setLength(sz); // Pre-asignación para evitar fragmentación
+                    try (FileChannel destChannel = raf.getChannel();
+                         FileChannel srcChannel = new RandomAccessFile(s, "r").getChannel()) {
+                        
+                        CountDownLatch fileLatch = new CountDownLatch(n);
+                        AtomicInteger chunksDoneForFile = new AtomicInteger(0);
+                        
+                        if (n == 1) {
+                            // OPTIMIZACIÓN: Si es un solo bloque (archivo pequeño/mediano), transferencia directa síncrona
+                            srcChannel.transferTo(0, sz, destChannel);
+                            row.updateProgress(1.0, 0, 1);
                             progress.accept(chunksDoneTotal.incrementAndGet(), totalChunks);
-                        } catch (Exception ex) {
-                            transferErrors.add("Error JettraStream en " + fName + ": " + ex.getMessage());
-                            fileLatch.countDown();
-                        } finally {
-                            chunkLimit.release();
-                        }
-                    });
-                }
-                
-                fileLatch.await(300, TimeUnit.SECONDS);
-                
-                if (isCancelled.getAsBoolean()) {
-                    deleteRec(tempSrcDir.toPath());
-                    deleteRec(tempDestDir.toPath());
-                    return;
-                }
+                        } else {
+                            // Para archivos grandes, usar concurrencia controlada
+                            Semaphore chunkLimit = new Semaphore(32); 
+                            for (int i = 0; i < n; i++) {
+                                if (isCancelled.getAsBoolean()) break;
+                                chunkLimit.acquire();
+                                
+                                final int idx = i;
+                                transferExecutor.submit(() -> {
+                                    try {
+                                        if (isCancelled.getAsBoolean()) return;
+                                        long pos = (long) idx * ChunkManager.CHUNK_SIZE;
+                                        long len = Math.min(ChunkManager.CHUNK_SIZE, sz - pos);
+                                        srcChannel.transferTo(pos, len, destChannel);
 
-                ChunkManager.mergeFiles(destFile, tempDestDir, n);
-                deleteRec(tempSrcDir.toPath());
-                deleteRec(tempDestDir.toPath());
+                                        int done = chunksDoneForFile.incrementAndGet();
+                                        row.updateProgress((double) done / n, idx, n);
+                                        progress.accept(chunksDoneTotal.incrementAndGet(), totalChunks);
+                                    } catch (Exception ex) {
+                                        transferErrors.add("Error JettraStream en " + fName + ": " + ex.getMessage());
+                                    } finally {
+                                        chunkLimit.release();
+                                        fileLatch.countDown();
+                                    }
+                                });
+                            }
+                            fileLatch.await(600, TimeUnit.SECONDS);
+                        }
+                    }
+                }
                 
+                if (isCancelled.getAsBoolean()) return;
                 row.markComplete();
                 Platform.runLater(() -> refreshSpecificNode(targetNode));
             }
@@ -800,12 +864,142 @@ public class JettraFileManagerFX extends Application {
             @Override public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException { Files.delete(dir); return FileVisitResult.CONTINUE; }
         });
     }
+
+    private void showMongoViewer() {
+        TextInputDialog dialog = new TextInputDialog("mongodb://localhost:27017");
+        dialog.setTitle("Visor de MongoDB");
+        dialog.setHeaderText("Ver Bases de Datos y Colecciones");
+        dialog.setContentText("Introduce el URI de MongoDB:");
+        dialog.showAndWait().ifPresent(uri -> {
+            virtualExecutor.submit(() -> {
+                try (MongoClient mongoClient = MongoClients.create(uri)) {
+                    TreeItem<String> root = new TreeItem<>("MongoDB: " + uri);
+                    MongoIterable<String> dbNames = mongoClient.listDatabaseNames();
+                    for (String dbName : dbNames) {
+                        TreeItem<String> dbItem = new TreeItem<>("🗄 " + dbName);
+                        MongoDatabase database = mongoClient.getDatabase(dbName);
+                        for (String collName : database.listCollectionNames()) {
+                            dbItem.getChildren().add(new TreeItem<>("📄 " + collName));
+                        }
+                        root.getChildren().add(dbItem);
+                    }
+                    root.setExpanded(true);
+                    
+                    Platform.runLater(() -> {
+                        TreeView<String> treeView = new TreeView<>(root);
+                        Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                        alert.setTitle("MongoDB Databases");
+                        alert.setHeaderText("Bases de Datos en el servidor");
+                        alert.getDialogPane().setContent(treeView);
+                        alert.getDialogPane().setPrefSize(400, 500);
+                        alert.showAndWait();
+                    });
+                } catch (Exception ex) {
+                    Platform.runLater(() -> {
+                        Alert alert = new Alert(Alert.AlertType.ERROR, "Error conectando a MongoDB:\n" + ex.getMessage());
+                        alert.showAndWait();
+                    });
+                }
+            });
+        });
+    }
+
+    private void showMongoBackup() {
+        TextInputDialog dialog = new TextInputDialog("mongodb://localhost:27017");
+        dialog.setTitle("Backup MongoDB");
+        dialog.setHeaderText("Crear Backup Nativo (JSON)");
+        dialog.setContentText("Introduce el URI de MongoDB:");
+        dialog.showAndWait().ifPresent(uri -> {
+            javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
+            chooser.setTitle("Seleccionar carpeta de destino para el Backup");
+            File dir = chooser.showDialog(null);
+            if (dir != null) {
+                virtualExecutor.submit(() -> {
+                    try (MongoClient mongoClient = MongoClients.create(uri)) {
+                        for (String dbName : mongoClient.listDatabaseNames()) {
+                            if (dbName.equals("admin") || dbName.equals("local") || dbName.equals("config")) continue;
+                            File dbFolder = new File(dir, dbName);
+                            dbFolder.mkdirs();
+                            MongoDatabase database = mongoClient.getDatabase(dbName);
+                            for (String collName : database.listCollectionNames()) {
+                                File collFile = new File(dbFolder, collName + ".json");
+                                MongoCollection<Document> collection = database.getCollection(collName);
+                                try (BufferedWriter writer = new BufferedWriter(new FileWriter(collFile))) {
+                                    for (Document doc : collection.find()) {
+                                        writer.write(doc.toJson());
+                                        writer.newLine();
+                                    }
+                                }
+                            }
+                        }
+                        Platform.runLater(() -> new Alert(Alert.AlertType.INFORMATION, "Backup completado exitosamente en:\n" + dir.getAbsolutePath()).showAndWait());
+                    } catch (Exception ex) {
+                        Platform.runLater(() -> new Alert(Alert.AlertType.ERROR, "Fallo al ejecutar el Backup:\n" + ex.getMessage()).showAndWait());
+                    }
+                });
+            }
+        });
+    }
+
+    private void showMongoRestore() {
+        TextInputDialog dialog = new TextInputDialog("mongodb://localhost:27017");
+        dialog.setTitle("Restore MongoDB");
+        dialog.setHeaderText("Restaurar Backup Nativo (JSON)");
+        dialog.setContentText("Introduce el URI de MongoDB destino:");
+        dialog.showAndWait().ifPresent(uri -> {
+            javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
+            chooser.setTitle("Seleccionar carpeta de origen del Backup (donde están las carpetas de las DBs)");
+            File dir = chooser.showDialog(null);
+            if (dir != null) {
+                virtualExecutor.submit(() -> {
+                    try (MongoClient mongoClient = MongoClients.create(uri)) {
+                        File[] dbFolders = dir.listFiles(File::isDirectory);
+                        if (dbFolders != null) {
+                            for (File dbFolder : dbFolders) {
+                                MongoDatabase database = mongoClient.getDatabase(dbFolder.getName());
+                                File[] collFiles = dbFolder.listFiles((d, name) -> name.endsWith(".json"));
+                                if (collFiles != null) {
+                                    for (File collFile : collFiles) {
+                                        String collName = collFile.getName().replace(".json", "");
+                                        MongoCollection<Document> collection = database.getCollection(collName);
+                                        try (BufferedReader reader = new BufferedReader(new FileReader(collFile))) {
+                                            String line;
+                                            java.util.List<Document> batch = new java.util.ArrayList<>();
+                                            while ((line = reader.readLine()) != null) {
+                                                if (line.trim().isEmpty()) continue;
+                                                batch.add(Document.parse(line));
+                                                if (batch.size() >= 1000) {
+                                                    collection.insertMany(batch);
+                                                    batch.clear();
+                                                }
+                                            }
+                                            if (!batch.isEmpty()) collection.insertMany(batch);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Platform.runLater(() -> new Alert(Alert.AlertType.INFORMATION, "Restauración completada exitosamente.").showAndWait());
+                    } catch (Exception ex) {
+                        Platform.runLater(() -> new Alert(Alert.AlertType.ERROR, "Fallo al ejecutar Restore:\n" + ex.getMessage()).showAndWait());
+                    }
+                });
+            }
+        });
+    }
     private String formatDuration(long millis) {
         long hours = millis / 3600000;
         long minutes = (millis % 3600000) / 60000;
         long seconds = (millis % 60000) / 1000;
-        long ms = millis % 1000;
-        return String.format("%02d:%02d:%02d.%03d", hours, minutes, seconds, ms);
+        return hours > 0 ? String.format("%02d:%02d:%02d", hours, minutes, seconds)
+                         : String.format("%02d:%02d", minutes, seconds);
+    }
+    
+    private String formatBytes(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        int exp = (int) (Math.log(bytes) / Math.log(1024));
+        String pre = "KMGTPE".charAt(exp - 1) + "";
+        return String.format("%.2f %sB", bytes / Math.pow(1024, exp), pre);
     }
 
     private void startTimer() {
@@ -823,15 +1017,19 @@ public class JettraFileManagerFX extends Application {
         if (timerTimeline != null) timerTimeline.stop();
     }
 
-    static class TransferRow extends VBox {
+    class TransferRow extends VBox {
         ProgressBar bar;
         Label label;
         FlowPane senderBlocks;
         FlowPane receptorBlocks;
         Rectangle[] senderRects;
         Rectangle[] receptorRects;
+        Tab tab;
 
-        TransferRow(String fileName, int totalChunks) {
+        VBox parentContainer;
+
+        TransferRow(String fileName, int totalChunks, VBox parent) {
+            this.parentContainer = parent;
             setSpacing(15);
             setAlignment(Pos.TOP_CENTER);
             setPadding(new Insets(15));
@@ -916,6 +1114,8 @@ public class JettraFileManagerFX extends Application {
             });
         }
         
+        void setTab(Tab tab) { this.tab = tab; }
+
         void markComplete() {
             Platform.runLater(() -> {
                 for (Rectangle rr : receptorRects) {
@@ -959,6 +1159,14 @@ public class JettraFileManagerFX extends Application {
                     
                     Glow glow = new Glow(0);
                     label.setEffect(glow);
+                    
+                    if (tab != null) {
+                        transferTabPane.getTabs().remove(tab);
+                    }
+                    if (parentContainer != null) {
+                        vBoxTerminados.getChildren().add(0, this);
+                    }
+
                     Timeline pulse = new Timeline(
                         new KeyFrame(Duration.ZERO, new KeyValue(glow.levelProperty(), 0)),
                         new KeyFrame(Duration.millis(500), new KeyValue(glow.levelProperty(), 1.0)),

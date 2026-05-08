@@ -36,15 +36,31 @@ public class JettraFileSystemReceptor implements JettraTransferService {
     private void initializeInstance() {
         try {
             File tempDir = new File(baseDir, ".jettra_receptor_temp");
-            if (!tempDir.exists()) tempDir.mkdirs();
+            if (!tempDir.exists()) {
+                if (!tempDir.mkdirs()) {
+                    // If we cannot create the directory, we just return early
+                    // This happens when browsing read-only directories like "/"
+                    return;
+                }
+            }
 
             File lockFile = new File(tempDir, ".lock");
             lockChannel = FileChannel.open(lockFile.toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-            instanceLock = lockChannel.tryLock();
+            
+            try {
+                instanceLock = lockChannel.tryLock();
+            } catch (java.nio.channels.OverlappingFileLockException e) {
+                // Ya tenemos un lock en esta misma JVM (múltiples instancias locales de JettraFileSystemReceptor)
+                // Esto es seguro ignorarlo.
+                return;
+            }
 
             if (instanceLock == null) {
                 System.err.println("Error: Ya hay otra instancia de JettraFileSystem Receptor en ejecución.");
-                System.exit(1);
+                // For a UI component we might not want to System.exit(1), but since we can't change architecture let's leave it
+                // Or maybe just don't exit if it's just browsing? Actually if it's already running, another instance doing listFiles is fine.
+                // Let's just return.
+                return;
             }
 
             // Limpieza inicial: Borrar todo en tempDir excepto el archivo .lock
@@ -53,9 +69,9 @@ public class JettraFileSystemReceptor implements JettraTransferService {
                  .map(Path::toFile)
                  .filter(f -> !f.getName().equals(".lock") && !f.equals(tempDir))
                  .forEach(File::delete);
-            System.out.println("Limpieza de .jettra_receptor_temp completada.");
+            System.out.println("Limpieza de .jettra_receptor_temp completada en " + baseDir);
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println("Advertencia: No se pudo inicializar instancia receptor en " + baseDir + " - " + e.getClass().getName() + ": " + e.getMessage());
         }
     }
 
