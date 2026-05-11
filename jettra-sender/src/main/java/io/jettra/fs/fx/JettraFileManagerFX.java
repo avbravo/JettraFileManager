@@ -795,7 +795,11 @@ public class JettraFileManagerFX extends Application {
                     
                     final byte[] finalData;
                     final boolean isCompressed;
-                    if (bytes.length > 1024) {
+                    boolean alreadyCompressed = fName.toLowerCase().endsWith(".zip") || fName.toLowerCase().endsWith(".jar") || 
+                                              fName.toLowerCase().endsWith(".png") || fName.toLowerCase().endsWith(".jpg") ||
+                                              fName.toLowerCase().endsWith(".gz")  || fName.toLowerCase().endsWith(".7z");
+                    
+                    if (bytes.length > 1024 && !alreadyCompressed) {
                         finalData = ChunkManager.compress(bytes);
                         isCompressed = true;
                     } else {
@@ -883,7 +887,11 @@ public class JettraFileManagerFX extends Application {
                                         if (isCancelled.getAsBoolean()) return;
                                         long pos = (long) idx * ChunkManager.CHUNK_SIZE;
                                         long len = Math.min(ChunkManager.CHUNK_SIZE, sz - pos);
-                                        srcChannel.transferTo(pos, len, destChannel);
+                                        long transferred = 0;
+                                        while (transferred < len) {
+                                            // Usar transferFrom en el destino para asegurar posición absoluta y evitar entrelazado por hilos paralelos
+                                            transferred += destChannel.transferFrom(srcChannel, pos + transferred, len - transferred);
+                                        }
 
                                         int done = chunksDoneForFile.incrementAndGet();
                                         row.updateProgress((double) done / n, idx, n);
@@ -897,6 +905,7 @@ public class JettraFileManagerFX extends Application {
                                 });
                             }
                             fileLatch.await(600, TimeUnit.SECONDS);
+                            destChannel.force(true);
                         }
                     }
                 }
