@@ -1,0 +1,22 @@
+name: jettra-file-manager
+base: core22
+version: '1.0.0'
+summary: Futuristic File Manager
+description: |
+  JettraFileManager is a high-performance file manager with 3D UI and advanced compression.
+
+grade: devel
+confinement: devmode
+
+parts:
+  jettra-app:
+    plugin: dump
+    source: JettraFileManager/jettra-sender/target/
+    stage-packages:
+      - libgtk-3-0
+      - libglu1-mesa
+
+apps:
+  jettra-file-manager:
+    command: java -jar $SNAP/jettra-sender-1.0-SNAPSHOT.jar
+    extensions: [gnome]

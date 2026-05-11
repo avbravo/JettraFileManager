@@ -2,6 +2,7 @@ package io.jettra.fs.fx;
 
 import io.jettra.fs.chunks.ChunkManager;
 import io.jettra.fs.grpc.JettraChunk;
+import io.jettra.jcf.io.JCFFileHandler;
 import io.jettra.fs.grpc.TransferStatus;
 import io.jettra.fs.receptor.JettraFileSystemReceptor;
 import io.jettra.fs.sender.JettraMain;
@@ -419,13 +420,141 @@ public class JettraFileManagerFX extends Application {
                 delete.getStyleClass().add("menu-delete");
                 delete.setOnAction(e -> {
                     Alert alert = new Alert(Alert.AlertType.CONFIRMATION, "¿Seguro que desea eliminar '" + item.name + "'?", ButtonType.YES, ButtonType.NO);
+                    applyDarkStyle(alert);
                     if (alert.showAndWait().orElse(ButtonType.NO) == ButtonType.YES) {
                         performDelete(item, getTreeItem());
                     }
                 });
-                menu.getItems().addAll(copy, cut, paste, new SeparatorMenuItem(), delete); setContextMenu(menu);
+
+                MenuItem compress = new MenuItem("📦 Comprimir (JettraCF)");
+                compress.setOnAction(e -> performJCFCompress(item, getTreeItem()));
+
+                MenuItem decompress = new MenuItem("🔓 Descomprimir");
+                decompress.setOnAction(e -> performJCFDecompress(item, getTreeItem()));
+
+                MenuItem sizeItem = new MenuItem("📊 Tamaño");
+                sizeItem.setOnAction(e -> showSizeInfo(item, getTreeItem()));
+
+                if (item.name.toLowerCase().endsWith(".jettracf")) {
+                    menu.getItems().addAll(sizeItem, decompress, new SeparatorMenuItem(), copy, cut, paste, new SeparatorMenuItem(), delete);
+                } else {
+                    menu.getItems().addAll(sizeItem, compress, new SeparatorMenuItem(), copy, cut, paste, new SeparatorMenuItem(), delete);
+                }
+                setContextMenu(menu);
             }
         }
+    }
+
+    private void performJCFCompress(FileNode node, TreeItem<FileNode> item) {
+        String path = getAbs(node, item);
+        File source = new File(path);
+        
+        TextInputDialog dialog = new TextInputDialog();
+        applyDarkStyle(dialog);
+        dialog.setTitle("JettraCompactFile - Compresión");
+        dialog.setHeaderText("Comprimiendo: " + node.name);
+        dialog.setContentText("Ingrese clave de seguridad:");
+        
+        dialog.showAndWait().ifPresent(key -> {
+            if (key.isEmpty()) return;
+            startTimer();
+            startChunkAnimation();
+            statusLabel.setText("Comprimiendo " + node.name + "...");
+            progressBar.setVisible(true);
+            progressBar.setProgress(-1);
+
+            virtualExecutor.submit(() -> {
+                try {
+                    File output = new File(source.getParent(), source.getName() + ".jettracf");
+                    JCFFileHandler.compressFile(source, output, key);
+                    Platform.runLater(() -> {
+                        finalizeTransfer("Compresión JCF finalizada");
+                        refreshSpecificNode(item.getParent());
+                        statusLabel.setText("Archivo comprimido: " + output.getName());
+                    });
+                } catch (Exception ex) {
+                    Platform.runLater(() -> {
+                        finalizeTransfer("Error en compresión JCF");
+                        Alert alert = new Alert(Alert.AlertType.ERROR, "Error al comprimir: " + ex.getMessage());
+                        alert.show();
+                    });
+                }
+            });
+        });
+    }
+
+    private void performJCFDecompress(FileNode node, TreeItem<FileNode> item) {
+        String path = getAbs(node, item);
+        File source = new File(path);
+        
+        TextInputDialog dialog = new TextInputDialog();
+        applyDarkStyle(dialog);
+        dialog.setTitle("JettraCompactFile - Descompresión");
+        dialog.setHeaderText("Descomprimiendo: " + node.name);
+        dialog.setContentText("Ingrese clave de seguridad:");
+        
+        dialog.showAndWait().ifPresent(key -> {
+            if (key.isEmpty()) return;
+            startTimer();
+            startChunkAnimation();
+            statusLabel.setText("Descomprimiendo " + node.name + "...");
+            progressBar.setVisible(true);
+            progressBar.setProgress(-1);
+
+            virtualExecutor.submit(() -> {
+                try {
+                    File outputDir = source.getParentFile();
+                    JCFFileHandler.decompressFile(source, outputDir, key);
+                    Platform.runLater(() -> {
+                        finalizeTransfer("Descompresión JCF finalizada");
+                        refreshSpecificNode(item.getParent());
+                        statusLabel.setText("Archivo descomprimido correctamente.");
+                    });
+                } catch (Exception ex) {
+                    Platform.runLater(() -> {
+                        finalizeTransfer("Error en descompresión JCF");
+                        Alert alert = new Alert(Alert.AlertType.ERROR, "Error al descomprimir: " + ex.getMessage());
+                        alert.show();
+                    });
+                }
+            });
+        });
+    }
+
+    private void applyDarkStyle(Dialog<?> dialog) {
+        DialogPane dialogPane = dialog.getDialogPane();
+        dialogPane.getStylesheets().add(Objects.requireNonNull(getClass().getResource("style.css")).toExternalForm());
+        dialogPane.getStyleClass().add("root");
+    }
+
+    private void showSizeInfo(FileNode node, TreeItem<FileNode> item) {
+        String path = getAbs(node, item);
+        File file = new File(path);
+        virtualExecutor.submit(() -> {
+            long size = getDirSize(file);
+            Platform.runLater(() -> {
+                Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                applyDarkStyle(alert);
+                alert.setTitle("Información de Tamaño");
+                alert.setHeaderText(node.name);
+                alert.setContentText("Tamaño total: " + formatSize(size));
+                alert.show();
+            });
+        });
+    }
+
+    private long getDirSize(File file) {
+        if (file.isFile()) return file.length();
+        long size = 0;
+        File[] files = file.listFiles();
+        if (files != null) for (File f : files) size += getDirSize(f);
+        return size;
+    }
+
+    private String formatSize(long v) {
+        if (v < 1024) return v + " B";
+        int z = (63 - Long.numberOfLeadingZeros(v)) / 10;
+        return String.format("%.2f %sB", (double)v / (1L << (z * 10)), " KMGTPE".charAt(z));
     }
 
     private void performDelete(FileNode node, TreeItem<FileNode> item) {
